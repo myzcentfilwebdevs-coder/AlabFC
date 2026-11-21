@@ -176,6 +176,10 @@ func Connect(name string, cfg Config) (*gorm.DB, error) {
 		name = DefaultName
 	}
 
+	if strings.TrimSpace(cfg.DSN) == "" && strings.TrimSpace(cfg.Host) == "" {
+		return nil, fmt.Errorf("db [%s] connection failed: PGHOST or DATABASE_URL environment variable is empty/not set", name)
+	}
+
 	dsn := cfg.BuildDSN()
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
@@ -185,12 +189,12 @@ func Connect(name string, cfg Config) (*gorm.DB, error) {
 	cfg.DSN = ""
 
 	if err != nil {
-		return nil, fmt.Errorf("db [%s] connection failed", name)
+		return nil, fmt.Errorf("db [%s] connection failed: %w", name, err)
 	}
 
 	sqlDB, err := db.DB()
 	if err != nil {
-		return nil, fmt.Errorf("db [%s] sql pool error", name)
+		return nil, fmt.Errorf("db [%s] sql pool error: %w", name, err)
 	}
 
 	sqlDB.SetMaxIdleConns(2)
@@ -199,7 +203,7 @@ func Connect(name string, cfg Config) (*gorm.DB, error) {
 	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
 
 	if err := sqlDB.Ping(); err != nil {
-		return nil, fmt.Errorf("db [%s] ping failed", name)
+		return nil, fmt.Errorf("db [%s] ping failed: %w", name, err)
 	}
 
 	mu.Lock()
