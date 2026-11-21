@@ -2,7 +2,6 @@ package database
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -65,23 +64,35 @@ func (c Config) BuildDSN() string {
 }
 
 func ConfigFromEnv(prefix string) (Config, error) {
-	key, err := ResolveMasterKey()
-	if err != nil {
-		return Config{}, err
+	strictEncrypted := os.Getenv("STRICT_ENCRYPTED_ENV") == "true"
+
+	var cachedKey []byte
+	getKey := func() ([]byte, error) {
+		if cachedKey != nil {
+			return cachedKey, nil
+		}
+		k, err := ResolveMasterKey()
+		if err != nil {
+			return nil, err
+		}
+		cachedKey = k
+		return cachedKey, nil
 	}
 
-	strictEncrypted := os.Getenv("ALLOW_PLAINTEXT_DB_ENV") != "true"
-
-	readField := func(name string, requireEncrypted bool) (string, error) {
+	readField := func(name string, sensitive bool) (string, error) {
 		val := strings.Trim(strings.TrimSpace(os.Getenv(prefix+name)), "'\"")
 		if val == "" {
 			return "", nil
 		}
 		if strings.HasPrefix(val, EncPrefix) {
+			key, err := getKey()
+			if err != nil {
+				return "", err
+			}
 			return DecryptValue(val, key)
 		}
-		if strictEncrypted && requireEncrypted {
-			return "", fmt.Errorf("security violation: %s%s is plain-text; encrypt it with ENC: using 'go run ./cmd/vault'", prefix, name)
+		if strictEncrypted && sensitive {
+			return "", fmt.Errorf("security violation: %s%s must be encrypted with ENC:", prefix, name)
 		}
 		return val, nil
 	}
@@ -182,8 +193,8 @@ func Connect(name string, cfg Config) (*gorm.DB, error) {
 		return nil, fmt.Errorf("db [%s] sql pool error", name)
 	}
 
-	sqlDB.SetMaxIdleConns(5)
-	sqlDB.SetMaxOpenConns(25)
+	sqlDB.SetMaxIdleConns(2)
+	sqlDB.SetMaxOpenConns(10)
 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
 
@@ -209,34 +220,56 @@ func ConnectEnv(name, prefix string) (*gorm.DB, error) {
 }
 
 func InitAll() error {
-	key, err := ResolveMasterKey()
-	if err != nil {
+	environmentOnly := os.Getenv("DB_ENV_ONLY") == "true"
+
+	if !environmentOnly {
+		vaultPath := os.Getenv("ALAB_VAULT_FILE")
+		if vaultPath == "" {
+			vaultPath = DefaultVaultFile
+		}
+
+		if _, err := os.Stat(vaultPath); err == nil {
+			key, err := ResolveMasterKey()
+			if err != nil {
+				return err
+			}
+
+			configs, err := LoadVault(vaultPath, key)
+			if err != nil {
+				return fmt.Errorf("database vault load failed: %w", err)
+			}
+
+			if len(configs) > 0 {
+				for name, cfg := range configs {
+					if _, err := Connect(name, cfg); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+		}
+	}
+
+	if _, err := ConnectEnv(DefaultName, ""); err != nil {
 		return err
 	}
 
-	vaultPath := os.Getenv("ALAB_VAULT_FILE")
-	if vaultPath == "" {
-		vaultPath = DefaultVaultFile
-	}
+	extraDBs := strings.TrimSpace(os.Getenv("DB_CONNECTIONS"))
+	if extraDBs != "" {
+		for _, rawName := range strings.Split(extraDBs, ",") {
+			name := strings.TrimSpace(rawName)
+			if name == "" || strings.EqualFold(name, DefaultName) {
+				continue
+			}
 
-	if _, statErr := os.Stat(vaultPath); statErr == nil {
-		configs, err := LoadVault(vaultPath, key)
-		if err != nil {
-			return fmt.Errorf("failed to unlock database vault: %w", err)
-		}
-		if len(configs) == 0 {
-			return errors.New("database vault is empty")
-		}
-		for name, cfg := range configs {
-			if _, err := Connect(name, cfg); err != nil {
+			prefix := strings.ToUpper(name) + "_"
+			if _, err := ConnectEnv(name, prefix); err != nil {
 				return err
 			}
 		}
-		return nil
 	}
 
-	_, err = ConnectEnv(DefaultName, "")
-	return err
+	return nil
 }
 
 func Get(name ...string) *gorm.DB {
