@@ -3,7 +3,6 @@ package main
 import (
 	"log"
 	"os"
-	"time"
 
 	"alabapi/database"
 
@@ -15,12 +14,8 @@ const AppVersion = "1.0.0"
 
 func healthHandler(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
-		"message":   "Welcome to ALAB FC",
-		"service":   "AlabAPI",
-		"version":   AppVersion,
-		"status":    "ok",
-		"timestamp": time.Now().Format(time.RFC3339),
-		"databases": database.PingAll(),
+		"message": "Welcome to ALAB FC",
+		"version": AppVersion,
 	})
 }
 
