@@ -11,9 +11,7 @@ import (
 )
 
 func main() {
-	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, reading from system environment")
-	}
+	_ = godotenv.Load()
 
 	if err := database.InitAll(); err != nil {
 		log.Fatalf("Database initialization failed: %v", err)
@@ -24,6 +22,13 @@ func main() {
 		AppName: "AlabAPI",
 	})
 
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"service": "AlabAPI",
+			"status":  "running",
+		})
+	})
+
 	app.Get("/api/health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"status":    "ok",
@@ -32,9 +37,9 @@ func main() {
 	})
 
 	port := os.Getenv("PORT")
-	if port == "" || port == "8080" {
+	if port == "" {
 		port = "4000"
 	}
 
-	log.Fatal(app.Listen("127.0.0.1:" + port))
+	log.Fatal(app.Listen("0.0.0.0:" + port))
 }
