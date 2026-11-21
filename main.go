@@ -3,12 +3,26 @@ package main
 import (
 	"log"
 	"os"
+	"time"
 
 	"alabapi/database"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/joho/godotenv"
 )
+
+const AppVersion = "1.0.0"
+
+func healthHandler(c *fiber.Ctx) error {
+	return c.JSON(fiber.Map{
+		"message":   "Welcome to ALAB FC",
+		"service":   "AlabAPI",
+		"version":   AppVersion,
+		"status":    "ok",
+		"timestamp": time.Now().Format(time.RFC3339),
+		"databases": database.PingAll(),
+	})
+}
 
 func main() {
 	_ = godotenv.Load()
@@ -19,22 +33,12 @@ func main() {
 	defer database.CloseAll()
 
 	app := fiber.New(fiber.Config{
-		AppName: "AlabAPI",
+		AppName: "ALAB FC v" + AppVersion,
 	})
 
-	app.Get("/", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{
-			"service": "AlabAPI",
-			"status":  "running",
-		})
-	})
-
-	app.Get("/api/health", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{
-			"status":    "ok",
-			"databases": database.PingAll(),
-		})
-	})
+	app.Get("/", healthHandler)
+	app.Get("/health", healthHandler)
+	app.Get("/api/health", healthHandler)
 
 	port := os.Getenv("PORT")
 	if port == "" {
