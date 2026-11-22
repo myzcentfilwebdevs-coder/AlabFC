@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	"alabapi/database"
@@ -9,6 +10,28 @@ import (
 	"alabapi/utils"
 
 	"github.com/gofiber/fiber/v2"
+)
+
+type PendingRegistration struct {
+	Username     string
+	Email        string
+	PasswordHash string
+	RoleID       int
+	StatusID     int
+	FirstName    string
+	MiddleName   string
+	LastName     string
+	Birthdate    *string
+	GenderID     *int
+	PhoneNumber  string
+	Address      string
+	AvatarURL    string
+	Secret       string
+}
+
+var (
+	pendingMu            sync.RWMutex
+	pendingRegistrations = make(map[string]PendingRegistration)
 )
 
 func getRefSeqnumByName(details string) *int {
@@ -55,6 +78,21 @@ func Register(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
+	req.Username = strings.TrimSpace(req.Username)
+	req.Email = strings.TrimSpace(req.Email)
+	if req.Username == "" || req.Email == "" || req.Password == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "username, email, and password are required"})
+	}
+
+	db := database.Get()
+	var existingCount int64
+	db.Model(&models.User{}).
+		Where("LOWER(username) = LOWER(?) OR LOWER(email) = LOWER(?)", req.Username, req.Email).
+		Count(&existingCount)
+	if existingCount > 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "Username or email already exists"})
+	}
+
 	roleID := models.RefRoleParent
 	if seq := getRefSeqnumByName("Parent"); seq != nil {
 		roleID = *seq
@@ -80,46 +118,32 @@ func Register(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to generate authenticator secret"})
 	}
 
-	user := models.User{
+	pending := PendingRegistration{
 		Username:     req.Username,
 		Email:        req.Email,
 		PasswordHash: hashedPassword,
 		RoleID:       roleID,
 		StatusID:     statusID,
-		IsVerified:   false,
+		FirstName:    req.FirstName,
+		MiddleName:   req.MiddleName,
+		LastName:     req.LastName,
+		Birthdate:    req.Birthdate,
+		GenderID:     genderID,
+		PhoneNumber:  req.PhoneNumber,
+		Address:      req.Address,
+		AvatarURL:    req.AvatarURL,
+		Secret:       secret,
 	}
 
-	db := database.Get()
-	if err := db.Create(&user).Error; err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "Username or email already exists"})
-	}
+	pendingMu.Lock()
+	pendingRegistrations[strings.ToLower(req.Username)] = pending
+	pendingRegistrations[strings.ToLower(req.Email)] = pending
+	pendingMu.Unlock()
 
-	profile := models.UserProfile{
-		UserID:      user.UserID,
-		FirstName:   req.FirstName,
-		MiddleName:  req.MiddleName,
-		LastName:    req.LastName,
-		Birthdate:   req.Birthdate,
-		GenderID:    genderID,
-		PhoneNumber: req.PhoneNumber,
-		Address:     req.Address,
-		AvatarURL:   req.AvatarURL,
-	}
-	db.Create(&profile)
+	otpauthURL, qrCodeURL := utils.BuildTOTPQRCode(req.Email, secret)
 
-	totpRecord := models.OTPVerification{
-		UserID:    user.UserID,
-		OTPCode:   "TOTP",
-		Purpose:   secret,
-		ExpiresAt: time.Now().AddDate(10, 0, 0),
-	}
-	db.Create(&totpRecord)
-
-	otpauthURL, qrCodeURL := utils.BuildTOTPQRCode(user.Email, secret)
-
-	return c.Status(201).JSON(fiber.Map{
-		"message":     "Registration successful",
-		"user_id":     user.UserID,
+	return c.Status(200).JSON(fiber.Map{
+		"message":     "Scan QR code and verify OTP to complete registration",
 		"secret":      secret,
 		"otpauth_url": otpauthURL,
 		"qr_code_url": qrCodeURL,
@@ -136,22 +160,64 @@ func VerifyAuthenticator(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
-	db := database.Get()
-	var user models.User
-	err := db.Where("username = ? OR email = ?", req.UsernameOrEmail, req.UsernameOrEmail).First(&user).Error
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "Account not found"})
+	key := strings.ToLower(strings.TrimSpace(req.UsernameOrEmail))
+
+	pendingMu.RLock()
+	pending, exists := pendingRegistrations[key]
+	pendingMu.RUnlock()
+
+	if !exists {
+		return c.Status(404).JSON(fiber.Map{"error": "No pending registration found for this username or email"})
 	}
 
-	secret := getUserTOTPSecret(user.UserID)
-	if secret == "" || !utils.VerifyTOTPCode(secret, req.OTPCode) {
+	if !utils.VerifyTOTPCode(pending.Secret, req.OTPCode) {
 		return c.Status(401).JSON(fiber.Map{"error": "Invalid authenticator OTP code"})
 	}
 
-	db.Model(&user).Update("is_verified", true)
+	db := database.Get()
 
-	return c.JSON(fiber.Map{
-		"message": "Authenticator verified successfully",
+	user := models.User{
+		Username:     pending.Username,
+		Email:        pending.Email,
+		PasswordHash: pending.PasswordHash,
+		RoleID:       pending.RoleID,
+		StatusID:     pending.StatusID,
+		IsVerified:   true,
+	}
+
+	if err := db.Create(&user).Error; err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Username or email already exists"})
+	}
+
+	profile := models.UserProfile{
+		UserID:      user.UserID,
+		FirstName:   pending.FirstName,
+		MiddleName:  pending.MiddleName,
+		LastName:    pending.LastName,
+		Birthdate:   pending.Birthdate,
+		GenderID:    pending.GenderID,
+		PhoneNumber: pending.PhoneNumber,
+		Address:     pending.Address,
+		AvatarURL:   pending.AvatarURL,
+	}
+	db.Create(&profile)
+
+	totpRecord := models.OTPVerification{
+		UserID:    user.UserID,
+		OTPCode:   "TOTP",
+		Purpose:   pending.Secret,
+		ExpiresAt: time.Now().AddDate(10, 0, 0),
+	}
+	db.Create(&totpRecord)
+
+	pendingMu.Lock()
+	delete(pendingRegistrations, strings.ToLower(pending.Username))
+	delete(pendingRegistrations, strings.ToLower(pending.Email))
+	pendingMu.Unlock()
+
+	return c.Status(201).JSON(fiber.Map{
+		"message": "Registration successful",
+		"user_id": user.UserID,
 	})
 }
 
