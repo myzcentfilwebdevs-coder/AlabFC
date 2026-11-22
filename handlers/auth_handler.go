@@ -24,126 +24,20 @@ func getRefSeqnumByName(details string) *int {
 	return &ref.Seqnum
 }
 
-func findOrCreateGoogleUser(gUser *utils.GoogleUser) (models.User, error) {
-	db := database.Get()
-	var user models.User
-
-	err := db.Where("LOWER(email) = LOWER(?)", gUser.Email).First(&user).Error
+func getUserTOTPSecret(userID int) string {
+	var otp models.OTPVerification
+	err := database.Get().
+		Where("user_id = ? AND otp_code = ?", userID, "TOTP").
+		Order("otp_id DESC").
+		First(&otp).Error
 	if err != nil {
-		roleID := models.RefRoleParent
-		if seq := getRefSeqnumByName("Parent"); seq != nil {
-			roleID = *seq
-		}
-		statusID := models.RefAccountActive
-		if seq := getRefSeqnumByName("Active"); seq != nil {
-			statusID = *seq
-		}
-
-		hashedPassword, _ := utils.HashPassword(gUser.Sub)
-		username := strings.Split(gUser.Email, "@")[0]
-
-		user = models.User{
-			Username:     username,
-			Email:        gUser.Email,
-			PasswordHash: hashedPassword,
-			RoleID:       roleID,
-			StatusID:     statusID,
-			IsVerified:   true,
-		}
-		if err := db.Create(&user).Error; err != nil {
-			suffix := gUser.Sub
-			if len(suffix) > 4 {
-				suffix = suffix[:4]
-			}
-			user.Username = username + "_" + suffix
-			if err := db.Create(&user).Error; err != nil {
-				return user, err
-			}
-		}
-
-		profile := models.UserProfile{
-			UserID:    user.UserID,
-			FirstName: gUser.GivenName,
-			LastName:  gUser.FamilyName,
-			AvatarURL: gUser.Picture,
-		}
-		db.Create(&profile)
+		return ""
 	}
-
-	now := time.Now()
-	db.Model(&user).Updates(map[string]interface{}{
-		"last_login_at": now,
-		"is_verified":   true,
-	})
-
-	return user, nil
-}
-
-func GoogleLoginRedirect(c *fiber.Ctx) error {
-	url := utils.GetGoogleLoginURL("alabfc")
-	return c.Redirect(url, fiber.StatusTemporaryRedirect)
-}
-
-func GoogleCallback(c *fiber.Ctx) error {
-	code := c.Query("code")
-	if code == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "Missing code from Google"})
-	}
-
-	gUser, err := utils.ExchangeGoogleCode(code)
-	if err != nil {
-		return c.Status(401).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	user, err := findOrCreateGoogleUser(gUser)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to save Google user"})
-	}
-
-	token, err := utils.GenerateJWT(user.UserID, user.Username, user.Email, user.RoleID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to generate token"})
-	}
-
-	return c.JSON(fiber.Map{
-		"message": "Login successful",
-		"token":   token,
-	})
-}
-
-func GoogleAuth(c *fiber.Ctx) error {
-	var req struct {
-		GoogleToken string `json:"google_token"`
-	}
-
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
-	}
-
-	gUser, err := utils.VerifyGoogleToken(req.GoogleToken)
-	if err != nil {
-		return c.Status(401).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	user, err := findOrCreateGoogleUser(gUser)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to save Google user"})
-	}
-
-	token, err := utils.GenerateJWT(user.UserID, user.Username, user.Email, user.RoleID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to generate token"})
-	}
-
-	return c.JSON(fiber.Map{
-		"message": "Login successful",
-		"token":   token,
-	})
+	return otp.Purpose
 }
 
 func Register(c *fiber.Ctx) error {
 	var req struct {
-		GoogleToken string  `json:"google_token"`
 		Username    string  `json:"username"`
 		Email       string  `json:"email"`
 		Password    string  `json:"password"`
@@ -159,32 +53,6 @@ func Register(c *fiber.Ctx) error {
 
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
-	}
-
-	isVerified := false
-
-	if req.GoogleToken != "" {
-		gUser, err := utils.VerifyGoogleToken(req.GoogleToken)
-		if err != nil {
-			return c.Status(401).JSON(fiber.Map{"error": err.Error()})
-		}
-		req.Email = gUser.Email
-		if req.FirstName == "" {
-			req.FirstName = gUser.GivenName
-		}
-		if req.LastName == "" {
-			req.LastName = gUser.FamilyName
-		}
-		if req.AvatarURL == "" {
-			req.AvatarURL = gUser.Picture
-		}
-		if req.Username == "" {
-			req.Username = strings.Split(gUser.Email, "@")[0]
-		}
-		if req.Password == "" {
-			req.Password = gUser.Sub
-		}
-		isVerified = true
 	}
 
 	roleID := models.RefRoleParent
@@ -207,13 +75,18 @@ func Register(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to hash password"})
 	}
 
+	secret, err := utils.GenerateTOTPSecret()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to generate authenticator secret"})
+	}
+
 	user := models.User{
 		Username:     req.Username,
 		Email:        req.Email,
 		PasswordHash: hashedPassword,
 		RoleID:       roleID,
 		StatusID:     statusID,
-		IsVerified:   isVerified,
+		IsVerified:   false,
 	}
 
 	db := database.Get()
@@ -234,17 +107,29 @@ func Register(c *fiber.Ctx) error {
 	}
 	db.Create(&profile)
 
+	totpRecord := models.OTPVerification{
+		UserID:    user.UserID,
+		OTPCode:   "TOTP",
+		Purpose:   secret,
+		ExpiresAt: time.Now().AddDate(10, 0, 0),
+	}
+	db.Create(&totpRecord)
+
+	otpauthURL, qrCodeURL := utils.BuildTOTPQRCode(user.Email, secret)
+
 	return c.Status(201).JSON(fiber.Map{
-		"message": "Registration successful",
-		"user_id": user.UserID,
+		"message":     "Registration successful",
+		"user_id":     user.UserID,
+		"secret":      secret,
+		"otpauth_url": otpauthURL,
+		"qr_code_url": qrCodeURL,
 	})
 }
 
-func Login(c *fiber.Ctx) error {
+func VerifyAuthenticator(c *fiber.Ctx) error {
 	var req struct {
-		GoogleToken     string `json:"google_token"`
 		UsernameOrEmail string `json:"username_or_email"`
-		Password        string `json:"password"`
+		OTPCode         string `json:"otp_code"`
 	}
 
 	if err := c.BodyParser(&req); err != nil {
@@ -253,19 +138,45 @@ func Login(c *fiber.Ctx) error {
 
 	db := database.Get()
 	var user models.User
+	err := db.Where("username = ? OR email = ?", req.UsernameOrEmail, req.UsernameOrEmail).First(&user).Error
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "Account not found"})
+	}
 
-	if req.GoogleToken != "" {
-		gUser, err := utils.VerifyGoogleToken(req.GoogleToken)
-		if err != nil {
-			return c.Status(401).JSON(fiber.Map{"error": err.Error()})
-		}
-		if err := db.Where("LOWER(email) = LOWER(?)", gUser.Email).First(&user).Error; err != nil {
-			return c.Status(404).JSON(fiber.Map{"error": "Account not found. Please register first"})
-		}
-	} else {
-		err := db.Where("username = ? OR email = ?", req.UsernameOrEmail, req.UsernameOrEmail).First(&user).Error
-		if err != nil || !utils.CheckPasswordHash(req.Password, user.PasswordHash) {
-			return c.Status(401).JSON(fiber.Map{"error": "Invalid username/email or password"})
+	secret := getUserTOTPSecret(user.UserID)
+	if secret == "" || !utils.VerifyTOTPCode(secret, req.OTPCode) {
+		return c.Status(401).JSON(fiber.Map{"error": "Invalid authenticator OTP code"})
+	}
+
+	db.Model(&user).Update("is_verified", true)
+
+	return c.JSON(fiber.Map{
+		"message": "Authenticator verified successfully",
+	})
+}
+
+func Login(c *fiber.Ctx) error {
+	var req struct {
+		UsernameOrEmail string `json:"username_or_email"`
+		Password        string `json:"password"`
+		OTPCode         string `json:"otp_code"`
+	}
+
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
+	}
+
+	db := database.Get()
+	var user models.User
+	err := db.Where("username = ? OR email = ?", req.UsernameOrEmail, req.UsernameOrEmail).First(&user).Error
+	if err != nil || !utils.CheckPasswordHash(req.Password, user.PasswordHash) {
+		return c.Status(401).JSON(fiber.Map{"error": "Invalid username/email or password"})
+	}
+
+	if req.OTPCode != "" {
+		secret := getUserTOTPSecret(user.UserID)
+		if secret != "" && !utils.VerifyTOTPCode(secret, req.OTPCode) {
+			return c.Status(401).JSON(fiber.Map{"error": "Invalid authenticator OTP code"})
 		}
 	}
 
@@ -285,27 +196,28 @@ func Login(c *fiber.Ctx) error {
 
 func ForgotPassword(c *fiber.Ctx) error {
 	var req struct {
-		GoogleToken string `json:"google_token"`
-		NewPassword string `json:"new_password"`
+		UsernameOrEmail string `json:"username_or_email"`
+		OTPCode         string `json:"otp_code"`
+		NewPassword     string `json:"new_password"`
 	}
 
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
-	if req.GoogleToken == "" || req.NewPassword == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "google_token and new_password are required"})
-	}
-
-	gUser, err := utils.VerifyGoogleToken(req.GoogleToken)
-	if err != nil {
-		return c.Status(401).JSON(fiber.Map{"error": err.Error()})
+	if req.UsernameOrEmail == "" || req.OTPCode == "" || req.NewPassword == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "username_or_email, otp_code, and new_password are required"})
 	}
 
 	db := database.Get()
 	var user models.User
-	if err := db.Where("LOWER(email) = LOWER(?)", gUser.Email).First(&user).Error; err != nil {
+	if err := db.Where("username = ? OR email = ?", req.UsernameOrEmail, req.UsernameOrEmail).First(&user).Error; err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "Account not found"})
+	}
+
+	secret := getUserTOTPSecret(user.UserID)
+	if secret == "" || !utils.VerifyTOTPCode(secret, req.OTPCode) {
+		return c.Status(401).JSON(fiber.Map{"error": "Invalid authenticator OTP code"})
 	}
 
 	hashedPassword, err := utils.HashPassword(req.NewPassword)

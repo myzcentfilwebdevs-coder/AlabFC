@@ -30,10 +30,8 @@ func SetupRoutes(app *fiber.App) {
 	api.Delete("/references/:seqnum", middleware.RequireAuth(), handlers.DeleteReference)
 
 	api.Post("/auth/register", handlers.Register)
+	api.Post("/auth/verify-otp", handlers.VerifyAuthenticator)
 	api.Post("/auth/login", handlers.Login)
-	api.Post("/auth/google", handlers.GoogleAuth)
-	api.Get("/auth/google/login", handlers.GoogleLoginRedirect)
-	api.Get("/auth/google/callback", handlers.GoogleCallback)
 	api.Post("/auth/forgot-password", handlers.ForgotPassword)
 	api.Get("/auth/me", middleware.RequireAuth(), handlers.GetMe)
 
