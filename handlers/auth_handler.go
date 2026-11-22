@@ -310,5 +310,12 @@ func GetMe(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "User not found"})
 	}
 
-	return c.JSON(user)
+	moduleIDs, modules := getRoleModules(user.RoleID)
+
+	return c.JSON(fiber.Map{
+		"user":       user,
+		"role_name":  getRoleName(user.RoleID),
+		"module_ids": moduleIDs,
+		"modules":    modules,
+	})
 }

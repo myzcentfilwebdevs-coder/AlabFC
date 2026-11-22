@@ -25,9 +25,9 @@ func SetupRoutes(app *fiber.App) {
 
 	api.Get("/references", handlers.GetReferences)
 	api.Get("/references/parent/:parent_id", handlers.GetReferencesByParent)
-	api.Post("/references", middleware.RequireAuth(), handlers.CreateReference)
-	api.Put("/references/:seqnum", middleware.RequireAuth(), handlers.UpdateReference)
-	api.Delete("/references/:seqnum", middleware.RequireAuth(), handlers.DeleteReference)
+	api.Post("/references", middleware.RequireAuth(), middleware.RequireModule(28), handlers.CreateReference)
+	api.Put("/references/:seqnum", middleware.RequireAuth(), middleware.RequireModule(28), handlers.UpdateReference)
+	api.Delete("/references/:seqnum", middleware.RequireAuth(), middleware.RequireModule(28), handlers.DeleteReference)
 
 	api.Post("/auth/register", handlers.Register)
 	api.Post("/auth/verify-otp", handlers.VerifyAuthenticator)
@@ -35,12 +35,20 @@ func SetupRoutes(app *fiber.App) {
 	api.Post("/auth/forgot-password", handlers.ForgotPassword)
 	api.Get("/auth/me", middleware.RequireAuth(), handlers.GetMe)
 
+	api.Get("/dashboard", middleware.RequireAuth(), middleware.RequireModule(1), handlers.GetDashboard)
+
+	api.Get("/rbac/my-access", middleware.RequireAuth(), handlers.GetMyAccess)
+	api.Get("/rbac/modules", middleware.RequireAuth(), handlers.GetModules)
+	api.Get("/rbac/role-access", middleware.RequireAuth(), middleware.RequireModule(29), handlers.GetRoleAccessList)
+	api.Get("/rbac/role-access/:role_id", middleware.RequireAuth(), middleware.RequireModule(29), handlers.GetRoleAccessByRole)
+	api.Put("/rbac/role-access/:role_id", middleware.RequireAuth(), middleware.RequireModule(29), handlers.UpdateRoleAccess)
+
 	api.Get("/players", handlers.GetPlayers)
-	api.Get("/users", middleware.RequireAuth(), handlers.GetUsers)
+	api.Get("/users", middleware.RequireAuth(), middleware.RequireModule(26), handlers.GetUsers)
 	api.Get("/users/:id", middleware.RequireAuth(), handlers.GetUserByID)
 	api.Put("/users/:id/profile", middleware.RequireAuth(), handlers.UpdateUserProfile)
 
 	api.Get("/parents/:parent_id/players", middleware.RequireAuth(), handlers.GetParentPlayers)
-	api.Post("/parents/link-player", middleware.RequireAuth(), handlers.LinkParentPlayer)
-	api.Delete("/parents/link-player/:id", middleware.RequireAuth(), handlers.UnlinkParentPlayer)
+	api.Post("/parents/link-player", middleware.RequireAuth(), middleware.RequireModule(24), handlers.LinkParentPlayer)
+	api.Delete("/parents/link-player/:id", middleware.RequireAuth(), middleware.RequireModule(24), handlers.UnlinkParentPlayer)
 }

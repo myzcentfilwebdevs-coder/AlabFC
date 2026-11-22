@@ -1,8 +1,11 @@
 package middleware
 
 import (
+	"strconv"
 	"strings"
 
+	"alabapi/database"
+	"alabapi/models"
 	"alabapi/utils"
 
 	"github.com/gofiber/fiber/v2"
@@ -13,8 +16,7 @@ func RequireAuth() fiber.Handler {
 		authHeader := strings.TrimSpace(c.Get("Authorization"))
 		if authHeader == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"success": false,
-				"error":   "Missing Authorization header",
+				"error": "Missing Authorization header",
 			})
 		}
 
@@ -26,8 +28,7 @@ func RequireAuth() fiber.Handler {
 		claims, err := utils.ParseJWT(tokenStr)
 		if err != nil {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"success": false,
-				"error":   "Unauthorized: " + err.Error(),
+				"error": "Unauthorized: " + err.Error(),
 			})
 		}
 
@@ -40,12 +41,10 @@ func RequireAuth() fiber.Handler {
 
 func RequireRoles(allowedRoles ...int) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		roleVal := c.Locals("role_id")
-		roleID, ok := roleVal.(int)
+		roleID, ok := c.Locals("role_id").(int)
 		if !ok {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-				"success": false,
-				"error":   "Forbidden: role not found in session",
+				"error": "Forbidden: role not found",
 			})
 		}
 
@@ -56,8 +55,36 @@ func RequireRoles(allowedRoles ...int) fiber.Handler {
 		}
 
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-			"success": false,
-			"error":   "Forbidden: insufficient role permissions",
+			"error": "Forbidden: insufficient role permissions",
+		})
+	}
+}
+
+func RequireModule(moduleID int) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		roleID, ok := c.Locals("role_id").(int)
+		if !ok {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"error": "Forbidden: role not found",
+			})
+		}
+
+		var access models.RoleAccess
+		if err := database.Get().Where("roleid = ?", roleID).First(&access).Error; err != nil {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"error": "Forbidden: no role access configured",
+			})
+		}
+
+		target := strconv.Itoa(moduleID)
+		for _, id := range strings.Split(access.ModuleIDs, ",") {
+			if strings.TrimSpace(id) == target {
+				return c.Next()
+			}
+		}
+
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "Forbidden: you do not have access to this module",
 		})
 	}
 }
