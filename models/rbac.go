@@ -1,14 +1,15 @@
 package models
 
-type Module struct {
+type AppModule struct {
 	Seqnum     int    `gorm:"column:seqnum;primaryKey;autoIncrement" json:"seqnum"`
 	ParentID   int    `gorm:"column:parent_id" json:"parent_id"`
-	ModuleName string `gorm:"column:module_name" json:"module_name"`
-	Code       string `gorm:"column:code" json:"code"`
+	Access     string `gorm:"column:access" json:"access"`
+	AccessType string `gorm:"column:accesstype" json:"accessType"`
+	RoutePath  string `gorm:"column:routepath" json:"routePath"`
 }
 
-func (Module) TableName() string {
-	return "modules"
+func (AppModule) TableName() string {
+	return "app_modules"
 }
 
 type RoleAccess struct {

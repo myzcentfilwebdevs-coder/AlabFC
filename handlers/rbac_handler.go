@@ -21,19 +21,19 @@ func parseModuleIDs(csv string) []int {
 	return ids
 }
 
-func getRoleModules(roleID int) ([]int, []models.Module) {
+func getRoleModules(roleID int) ([]int, []models.AppModule) {
 	db := database.Get()
 	var access models.RoleAccess
 	if err := db.Where("roleid = ?", roleID).First(&access).Error; err != nil {
-		return []int{}, []models.Module{}
+		return []int{}, []models.AppModule{}
 	}
 
 	ids := parseModuleIDs(access.ModuleIDs)
 	if len(ids) == 0 {
-		return []int{}, []models.Module{}
+		return []int{}, []models.AppModule{}
 	}
 
-	var modules []models.Module
+	var modules []models.AppModule
 	db.Where("seqnum IN ?", ids).Order("seqnum ASC").Find(&modules)
 	return ids, modules
 }
@@ -47,7 +47,7 @@ func getRoleName(roleID int) string {
 }
 
 func GetModules(c *fiber.Ctx) error {
-	var modules []models.Module
+	var modules []models.AppModule
 	database.Get().Order("seqnum ASC").Find(&modules)
 	return c.JSON(modules)
 }
@@ -55,7 +55,19 @@ func GetModules(c *fiber.Ctx) error {
 func GetRoleAccessList(c *fiber.Ctx) error {
 	var list []models.RoleAccess
 	database.Get().Order("roleid ASC").Find(&list)
-	return c.JSON(list)
+
+	result := make([]fiber.Map, 0, len(list))
+	for _, item := range list {
+		ids, modules := getRoleModules(item.RoleID)
+		result = append(result, fiber.Map{
+			"seqnum":     item.Seqnum,
+			"role_id":    item.RoleID,
+			"role_name":  getRoleName(item.RoleID),
+			"module_ids": ids,
+			"modules":    modules,
+		})
+	}
+	return c.JSON(result)
 }
 
 func GetRoleAccessByRole(c *fiber.Ctx) error {
@@ -113,6 +125,7 @@ func UpdateRoleAccess(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"message":    "Role access updated",
 		"role_id":    roleID,
+		"role_name":  getRoleName(roleID),
 		"module_ids": ids,
 		"modules":    modules,
 	})
