@@ -42,6 +42,8 @@ func SetupRoutes(app *fiber.App) {
 	api.Get("/rbac/role-access", middleware.RequireAuth(), handlers.GetRoleAccessList)
 	api.Get("/rbac/role-access/:role_id", middleware.RequireAuth(), handlers.GetRoleAccessByRole)
 	api.Put("/rbac/role-access/:role_id", middleware.RequireAuth(), middleware.RequireModule(29), handlers.UpdateRoleAccess)
+	api.Patch("/rbac/role-access/:role_id/toggle", middleware.RequireAuth(), middleware.RequireModule(29), handlers.ToggleRoleModule)
+	api.Delete("/rbac/role-access/:role_id/module/:module_id", middleware.RequireAuth(), middleware.RequireModule(29), handlers.RemoveRoleModule)
 
 	api.Get("/players", handlers.GetPlayers)
 	api.Get("/users", middleware.RequireAuth(), middleware.RequireModule(26), handlers.GetUsers)

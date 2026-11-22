@@ -142,3 +142,88 @@ func GetMyAccess(c *fiber.Ctx) error {
 		"modules":    modules,
 	})
 }
+
+func RemoveRoleModule(c *fiber.Ctx) error {
+	roleID, err := strconv.Atoi(c.Params("role_id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid role_id"})
+	}
+
+	moduleID, err := strconv.Atoi(c.Params("module_id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid module_id"})
+	}
+
+	db := database.Get()
+	var access models.RoleAccess
+	if err := db.Where("roleid = ?", roleID).First(&access).Error; err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "Role access not found"})
+	}
+
+	remaining := []string{}
+	for _, id := range parseModuleIDs(access.ModuleIDs) {
+		if id != moduleID {
+			remaining = append(remaining, strconv.Itoa(id))
+		}
+	}
+
+	access.ModuleIDs = strings.Join(remaining, ",")
+	db.Save(&access)
+
+	ids, modules := getRoleModules(roleID)
+	return c.JSON(fiber.Map{
+		"message":    "Module removed from role",
+		"role_id":    roleID,
+		"role_name":  getRoleName(roleID),
+		"module_ids": ids,
+		"modules":    modules,
+	})
+}
+
+func ToggleRoleModule(c *fiber.Ctx) error {
+	roleID, err := strconv.Atoi(c.Params("role_id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid role_id"})
+	}
+
+	var req struct {
+		ModuleID int `json:"module_id"`
+	}
+	if err := c.BodyParser(&req); err != nil || req.ModuleID == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "module_id is required"})
+	}
+
+	db := database.Get()
+	var access models.RoleAccess
+	if err := db.Where("roleid = ?", roleID).First(&access).Error; err != nil {
+		access = models.RoleAccess{
+			RoleID:    roleID,
+			ModuleIDs: strconv.Itoa(req.ModuleID),
+		}
+		db.Create(&access)
+	} else {
+		found := false
+		updated := []string{}
+		for _, id := range parseModuleIDs(access.ModuleIDs) {
+			if id == req.ModuleID {
+				found = true
+				continue
+			}
+			updated = append(updated, strconv.Itoa(id))
+		}
+		if !found {
+			updated = append(updated, strconv.Itoa(req.ModuleID))
+		}
+		access.ModuleIDs = strings.Join(updated, ",")
+		db.Save(&access)
+	}
+
+	ids, modules := getRoleModules(roleID)
+	return c.JSON(fiber.Map{
+		"message":    "Role module updated",
+		"role_id":    roleID,
+		"role_name":  getRoleName(roleID),
+		"module_ids": ids,
+		"modules":    modules,
+	})
+}
