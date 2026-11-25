@@ -46,11 +46,36 @@ func SetupRoutes(app *fiber.App) {
 	api.Delete("/rbac/role-access/:role_id/module/:module_id", middleware.RequireAuth(), middleware.RequireModule(29), handlers.RemoveRoleModule)
 
 	api.Get("/players", handlers.GetPlayers)
+	api.Post("/players", middleware.RequireAuth(), middleware.RequireModule(23), handlers.CreatePlayer)
+
+	api.Get("/sessions", middleware.RequireAuth(), middleware.RequireModule(10), handlers.GetTrainingSessions)
+	api.Post("/sessions", middleware.RequireAuth(), middleware.RequireModule(11), handlers.CreateTrainingSession)
+	api.Put("/sessions/:id", middleware.RequireAuth(), middleware.RequireModule(12), handlers.UpdateTrainingSession)
+	api.Delete("/sessions/:id", middleware.RequireAuth(), middleware.RequireModule(12), handlers.DeleteTrainingSession)
+	api.Get("/sessions/:id/attendance", middleware.RequireAuth(), middleware.RequireModule(13), handlers.GetSessionAttendance)
+
+	api.Get("/attendance/daily", middleware.RequireAuth(), middleware.RequireModule(13), handlers.GetDailyAttendance)
+	api.Post("/attendance/daily", middleware.RequireAuth(), middleware.RequireModule(14), handlers.RecordDailyAttendance)
+	api.Get("/attendance/history", middleware.RequireAuth(), middleware.RequireModule(13), handlers.GetAllPlayersAttendanceHistory)
+	api.Get("/attendance/player/:player_id", middleware.RequireAuth(), middleware.RequireModule(13), handlers.GetPlayerAttendanceHistory)
+	api.Post("/attendance", middleware.RequireAuth(), middleware.RequireModule(14), handlers.RecordAttendance)
+	api.Post("/attendance/bulk", middleware.RequireAuth(), middleware.RequireModule(14), handlers.RecordBulkAttendance)
+
 	api.Get("/users", middleware.RequireAuth(), middleware.RequireModule(26), handlers.GetUsers)
 	api.Get("/users/:id", middleware.RequireAuth(), handlers.GetUserByID)
 	api.Put("/users/:id/profile", middleware.RequireAuth(), handlers.UpdateUserProfile)
 
+	api.Get("/my-players", middleware.RequireAuth(), handlers.GetMyPlayers)
 	api.Get("/parents/:parent_id/players", middleware.RequireAuth(), handlers.GetParentPlayers)
 	api.Post("/parents/link-player", middleware.RequireAuth(), middleware.RequireModule(24), handlers.LinkParentPlayer)
 	api.Delete("/parents/link-player/:id", middleware.RequireAuth(), middleware.RequireModule(24), handlers.UnlinkParentPlayer)
+
+	api.Get("/soa", middleware.RequireAuth(), middleware.RequireModule(16), handlers.GetSOAs)
+	api.Get("/soa/player/:player_id", middleware.RequireAuth(), middleware.RequireModule(16), handlers.GetPlayerSOAs)
+	api.Get("/soa/:id", middleware.RequireAuth(), middleware.RequireModule(16), handlers.GetSOAByID)
+	api.Post("/soa", middleware.RequireAuth(), middleware.RequireModule(17), handlers.CreateSOA)
+	api.Put("/soa/:id", middleware.RequireAuth(), middleware.RequireModule(17), handlers.UpdateSOA)
+	api.Delete("/soa/:id", middleware.RequireAuth(), middleware.RequireModule(18), handlers.DeleteSOA)
+	api.Post("/soa/:id/pay", middleware.RequireAuth(), middleware.RequireModule(19), handlers.SubmitSOAPayment)
+	api.Patch("/soa/payments/:payment_id/verify", middleware.RequireAuth(), middleware.RequireModule(20), handlers.VerifySOAPayment)
 }
