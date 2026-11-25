@@ -66,6 +66,7 @@ func SetupRoutes(app *fiber.App) {
 	api.Put("/users/:id/profile", middleware.RequireAuth(), handlers.UpdateUserProfile)
 
 	api.Get("/my-players", middleware.RequireAuth(), handlers.GetMyPlayers)
+	api.Get("/parents", middleware.RequireAuth(), handlers.GetParents)
 	api.Get("/parents/:parent_id/players", middleware.RequireAuth(), handlers.GetParentPlayers)
 	api.Post("/parents/link-player", middleware.RequireAuth(), middleware.RequireModule(24), handlers.LinkParentPlayer)
 	api.Delete("/parents/link-player/:id", middleware.RequireAuth(), middleware.RequireModule(24), handlers.UnlinkParentPlayer)

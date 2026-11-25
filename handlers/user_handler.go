@@ -12,6 +12,52 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+func findUserIDByName(name string, roleID int) (int, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return 0, fmt.Errorf("name is empty")
+	}
+
+	db := database.Get()
+	var user models.User
+
+	query := db.Model(&models.User{}).
+		Joins("LEFT JOIN user_profiles ON user_profiles.user_id = users.user_id")
+
+	if roleID > 0 {
+		query = query.Where("users.role_id = ?", roleID)
+	}
+
+	err := query.Where(
+		"LOWER(TRIM(COALESCE(user_profiles.first_name, '') || ' ' || COALESCE(user_profiles.last_name, ''))) = LOWER(?) OR "+
+			"LOWER(TRIM(COALESCE(user_profiles.first_name, '') || ' ' || COALESCE(user_profiles.middle_name, '') || ' ' || COALESCE(user_profiles.last_name, ''))) = LOWER(?) OR "+
+			"LOWER(users.username) = LOWER(?) OR LOWER(users.email) = LOWER(?)",
+		name, name, name, name,
+	).First(&user).Error
+
+	if err == nil {
+		return user.UserID, nil
+	}
+
+	like := "%" + name + "%"
+	query2 := db.Model(&models.User{}).
+		Joins("LEFT JOIN user_profiles ON user_profiles.user_id = users.user_id")
+	if roleID > 0 {
+		query2 = query2.Where("users.role_id = ?", roleID)
+	}
+
+	err = query2.Where(
+		"TRIM(COALESCE(user_profiles.first_name, '') || ' ' || COALESCE(user_profiles.last_name, '')) ILIKE ? OR "+
+			"user_profiles.first_name ILIKE ? OR user_profiles.last_name ILIKE ? OR users.username ILIKE ?",
+		like, like, like, like,
+	).First(&user).Error
+
+	if err != nil {
+		return 0, fmt.Errorf("user %q not found", name)
+	}
+	return user.UserID, nil
+}
+
 func GetUsers(c *fiber.Ctx) error {
 	db := database.Get()
 	var users []models.User
@@ -24,6 +70,56 @@ func GetUsers(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(users)
+}
+
+func GetParents(c *fiber.Ctx) error {
+	db := database.Get()
+	query := db.Model(&models.User{}).
+		Preload("Profile").
+		Joins("LEFT JOIN user_profiles ON user_profiles.user_id = users.user_id").
+		Where("users.role_id = ?", models.RefRoleParent)
+
+	if search := strings.TrimSpace(c.Query("search")); search != "" {
+		like := "%" + search + "%"
+		query = query.Where(
+			"TRIM(COALESCE(user_profiles.first_name, '') || ' ' || COALESCE(user_profiles.last_name, '')) ILIKE ? OR "+
+				"user_profiles.first_name ILIKE ? OR user_profiles.last_name ILIKE ? OR users.username ILIKE ? OR users.email ILIKE ?",
+			like, like, like, like, like,
+		)
+	}
+
+	var parents []models.User
+	query.Order("user_profiles.last_name ASC, user_profiles.first_name ASC").Find(&parents)
+
+	result := make([]fiber.Map, 0, len(parents))
+	for _, p := range parents {
+		firstName, middleName, lastName, phone, avatar := "", "", "", "", ""
+		if p.Profile != nil {
+			firstName = p.Profile.FirstName
+			middleName = p.Profile.MiddleName
+			lastName = p.Profile.LastName
+			phone = p.Profile.PhoneNumber
+			avatar = p.Profile.AvatarURL
+		}
+		fullName := strings.TrimSpace(firstName + " " + lastName)
+		if fullName == "" {
+			fullName = p.Username
+		}
+		result = append(result, fiber.Map{
+			"user_id":      p.UserID,
+			"username":     p.Username,
+			"email":        p.Email,
+			"first_name":   firstName,
+			"middle_name":  middleName,
+			"last_name":    lastName,
+			"full_name":    fullName,
+			"phone_number": phone,
+			"avatar_url":   avatar,
+			"profile":      p.Profile,
+		})
+	}
+
+	return c.JSON(result)
 }
 
 func GetPlayers(c *fiber.Ctx) error {
@@ -41,14 +137,30 @@ func GetPlayers(c *fiber.Ctx) error {
 		query = query.Where("user_profiles.age_category_id = ?", ageCatID)
 	}
 
+	if search := strings.TrimSpace(c.Query("search")); search != "" {
+		like := "%" + search + "%"
+		query = query.Where(
+			"TRIM(COALESCE(user_profiles.first_name, '') || ' ' || COALESCE(user_profiles.last_name, '')) ILIKE ? OR "+
+				"user_profiles.first_name ILIKE ? OR user_profiles.last_name ILIKE ?",
+			like, like, like,
+		)
+	}
+
 	var players []models.User
 	query.Order("user_profiles.last_name ASC, user_profiles.first_name ASC").Find(&players)
 
 	refMap := getRefMap()
 	result := make([]fiber.Map, 0, len(players))
 	for _, p := range players {
+		firstName, middleName, lastName, avatar := "", "", "", ""
 		ageCatName, posName, genderName := "", "", ""
+		var jersey *int
 		if p.Profile != nil {
+			firstName = p.Profile.FirstName
+			middleName = p.Profile.MiddleName
+			lastName = p.Profile.LastName
+			avatar = p.Profile.AvatarURL
+			jersey = p.Profile.JerseyNumber
 			if p.Profile.AgeCategoryID != nil {
 				ageCatName = refMap[*p.Profile.AgeCategoryID]
 			}
@@ -59,16 +171,26 @@ func GetPlayers(c *fiber.Ctx) error {
 				genderName = refMap[*p.Profile.GenderID]
 			}
 		}
+		fullName := strings.TrimSpace(firstName + " " + lastName)
+		if fullName == "" {
+			fullName = p.Username
+		}
 		result = append(result, fiber.Map{
-			"user_id":      p.UserID,
-			"username":     p.Username,
-			"email":        p.Email,
-			"role_id":      p.RoleID,
-			"status_id":    p.StatusID,
-			"profile":      p.Profile,
-			"gender":       genderName,
-			"age_category": ageCatName,
-			"position":     posName,
+			"user_id":       p.UserID,
+			"username":      p.Username,
+			"email":         p.Email,
+			"role_id":       p.RoleID,
+			"status_id":     p.StatusID,
+			"first_name":    firstName,
+			"middle_name":   middleName,
+			"last_name":     lastName,
+			"full_name":     fullName,
+			"jersey_number": jersey,
+			"avatar_url":    avatar,
+			"profile":       p.Profile,
+			"gender":        genderName,
+			"age_category":  ageCatName,
+			"position":      posName,
 		})
 	}
 
@@ -77,22 +199,23 @@ func GetPlayers(c *fiber.Ctx) error {
 
 func CreatePlayer(c *fiber.Ctx) error {
 	var req struct {
-		Username      string  `json:"username"`
-		Email         string  `json:"email"`
-		Password      string  `json:"password"`
-		FirstName     string  `json:"first_name"`
-		MiddleName    string  `json:"middle_name"`
-		LastName      string  `json:"last_name"`
-		Birthdate     *string `json:"birthdate"`
-		Gender        string  `json:"gender"`
-		AgeCategory   string  `json:"age_category"`
-		Position      string  `json:"position"`
-		JerseyNumber  *int    `json:"jersey_number"`
-		PhoneNumber   string  `json:"phone_number"`
-		Address       string  `json:"address"`
-		AvatarURL     string  `json:"avatar_url"`
-		ParentUserID  *int    `json:"parent_user_id"`
-		Relationship  string  `json:"relationship"`
+		Username     string  `json:"username"`
+		Email        string  `json:"email"`
+		Password     string  `json:"password"`
+		FirstName    string  `json:"first_name"`
+		MiddleName   string  `json:"middle_name"`
+		LastName     string  `json:"last_name"`
+		Birthdate    *string `json:"birthdate"`
+		Gender       string  `json:"gender"`
+		AgeCategory  string  `json:"age_category"`
+		Position     string  `json:"position"`
+		JerseyNumber *int    `json:"jersey_number"`
+		PhoneNumber  string  `json:"phone_number"`
+		Address      string  `json:"address"`
+		AvatarURL    string  `json:"avatar_url"`
+		ParentUserID *int    `json:"parent_user_id"`
+		ParentName   string  `json:"parent_name"`
+		Relationship string  `json:"relationship"`
 	}
 
 	if err := c.BodyParser(&req); err != nil {
@@ -162,6 +285,11 @@ func CreatePlayer(c *fiber.Ctx) error {
 	db.Create(&profile)
 
 	parentID := req.ParentUserID
+	if parentID == nil && strings.TrimSpace(req.ParentName) != "" {
+		if pid, err := findUserIDByName(req.ParentName, models.RefRoleParent); err == nil {
+			parentID = &pid
+		}
+	}
 	if parentID == nil {
 		if rID, ok := c.Locals("role_id").(int); ok && rID == models.RefRoleParent {
 			if uID, ok := c.Locals("user_id").(int); ok && uID > 0 {
@@ -214,18 +342,104 @@ func UpdateUserProfile(c *fiber.Ctx) error {
 }
 
 func LinkParentPlayer(c *fiber.Ctx) error {
-	var link models.ParentPlayer
-	if err := c.BodyParser(&link); err != nil {
+	var req struct {
+		ParentUserID   int      `json:"parent_user_id"`
+		ParentName     string   `json:"parent_name"`
+		PlayerUserID   int      `json:"player_user_id"`
+		PlayerUserIDs  []int    `json:"player_user_ids"`
+		PlayerName     string   `json:"player_name"`
+		PlayerNames    []string `json:"player_names"`
+		RelationshipID *int     `json:"relationship_id"`
+		Relationship   string   `json:"relationship"`
+	}
+
+	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
-	if err := database.Get().Create(&link).Error; err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "Failed to link parent and player"})
+	parentID := req.ParentUserID
+	if parentID == 0 && strings.TrimSpace(req.ParentName) != "" {
+		pid, err := findUserIDByName(req.ParentName, models.RefRoleParent)
+		if err != nil {
+			pid, err = findUserIDByName(req.ParentName, 0)
+			if err != nil {
+				return c.Status(404).JSON(fiber.Map{"error": "Parent not found: " + req.ParentName})
+			}
+		}
+		parentID = pid
+	}
+
+	if parentID == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "parent_name or parent_user_id is required"})
+	}
+
+	relID := req.RelationshipID
+	if relID == nil && strings.TrimSpace(req.Relationship) != "" {
+		relID = getRefSeqnumByName(req.Relationship)
+	}
+
+	playerIDs := make([]int, 0)
+	if req.PlayerUserID > 0 {
+		playerIDs = append(playerIDs, req.PlayerUserID)
+	}
+	for _, id := range req.PlayerUserIDs {
+		if id > 0 {
+			playerIDs = append(playerIDs, id)
+		}
+	}
+	if strings.TrimSpace(req.PlayerName) != "" {
+		if pid, err := findUserIDByName(req.PlayerName, models.RefRolePlayer); err == nil {
+			playerIDs = append(playerIDs, pid)
+		}
+	}
+	for _, pName := range req.PlayerNames {
+		if pid, err := findUserIDByName(pName, models.RefRolePlayer); err == nil {
+			playerIDs = append(playerIDs, pid)
+		}
+	}
+
+	if len(playerIDs) == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "At least one player is required"})
+	}
+
+	db := database.Get()
+	linked := make([]models.ParentPlayer, 0)
+	for _, pid := range playerIDs {
+		var existing models.ParentPlayer
+		if err := db.Where("parent_user_id = ? AND player_user_id = ?", parentID, pid).First(&existing).Error; err == nil {
+			if relID != nil {
+				existing.RelationshipID = relID
+				db.Save(&existing)
+			}
+			linked = append(linked, existing)
+			continue
+		}
+
+		link := models.ParentPlayer{
+			ParentUserID:   parentID,
+			PlayerUserID:   pid,
+			RelationshipID: relID,
+		}
+		if err := db.Create(&link).Error; err == nil {
+			linked = append(linked, link)
+		}
+	}
+
+	var parentUser models.User
+	db.Preload("Profile").First(&parentUser, parentID)
+	parentFullName := parentUser.Username
+	if parentUser.Profile != nil {
+		if n := strings.TrimSpace(parentUser.Profile.FirstName + " " + parentUser.Profile.LastName); n != "" {
+			parentFullName = n
+		}
 	}
 
 	return c.Status(201).JSON(fiber.Map{
-		"message": "Parent and player linked",
-		"data":    link,
+		"message":        "Parent and player(s) linked",
+		"parent_user_id": parentID,
+		"parent_name":    parentFullName,
+		"linked_count":   len(linked),
+		"data":           linked,
 	})
 }
 
@@ -264,7 +478,10 @@ func GetMyPlayers(c *fiber.Ctx) error {
 			relName = refMap[*l.RelationshipID]
 		}
 		ageCat, pos, gender := "", "", ""
+		firstName, lastName := "", ""
 		if l.Player != nil && l.Player.Profile != nil {
+			firstName = l.Player.Profile.FirstName
+			lastName = l.Player.Profile.LastName
 			if l.Player.Profile.AgeCategoryID != nil {
 				ageCat = refMap[*l.Player.Profile.AgeCategoryID]
 			}
@@ -278,6 +495,9 @@ func GetMyPlayers(c *fiber.Ctx) error {
 		result = append(result, fiber.Map{
 			"link_id":        l.ID,
 			"player_user_id": l.PlayerUserID,
+			"first_name":     firstName,
+			"last_name":      lastName,
+			"full_name":      strings.TrimSpace(firstName + " " + lastName),
 			"relationship":   relName,
 			"player":         l.Player,
 			"gender":         gender,
