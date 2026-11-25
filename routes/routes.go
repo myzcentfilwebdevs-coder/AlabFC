@@ -79,4 +79,18 @@ func SetupRoutes(app *fiber.App) {
 	api.Delete("/soa/:id", middleware.RequireAuth(), middleware.RequireModule(18), handlers.DeleteSOA)
 	api.Post("/soa/:id/pay", middleware.RequireAuth(), middleware.RequireModule(19), handlers.SubmitSOAPayment)
 	api.Patch("/soa/payments/:payment_id/verify", middleware.RequireAuth(), middleware.RequireModule(20), handlers.VerifySOAPayment)
+
+	api.Get("/tournaments", handlers.GetTournaments)
+	api.Post("/tournaments", middleware.RequireAuth(), middleware.RequireModule(4), handlers.CreateTournament)
+	api.Put("/tournaments/matches/:match_id", middleware.RequireAuth(), middleware.RequireModule(5), handlers.UpdateTournamentMatch)
+	api.Delete("/tournaments/matches/:match_id", middleware.RequireAuth(), middleware.RequireModule(5), handlers.DeleteTournamentMatch)
+	api.Patch("/tournaments/roster/:roster_id/consent", middleware.RequireAuth(), middleware.RequireModule(8), handlers.UpdateParentConsent)
+	api.Delete("/tournaments/roster/:roster_id", middleware.RequireAuth(), middleware.RequireModule(7), handlers.RemoveTournamentRoster)
+	api.Get("/tournaments/:id", handlers.GetTournamentByID)
+	api.Put("/tournaments/:id", middleware.RequireAuth(), middleware.RequireModule(5), handlers.UpdateTournament)
+	api.Delete("/tournaments/:id", middleware.RequireAuth(), middleware.RequireModule(6), handlers.DeleteTournament)
+	api.Get("/tournaments/:id/matches", handlers.GetTournamentMatches)
+	api.Post("/tournaments/:id/matches", middleware.RequireAuth(), middleware.RequireModule(4), handlers.AddTournamentMatches)
+	api.Get("/tournaments/:id/roster", handlers.GetTournamentRoster)
+	api.Post("/tournaments/:id/roster", middleware.RequireAuth(), middleware.RequireModule(7), handlers.AddTournamentRoster)
 }
