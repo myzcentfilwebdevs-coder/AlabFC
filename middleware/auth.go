@@ -34,7 +34,15 @@ func RequireAuth() fiber.Handler {
 
 		c.Locals("claims", claims)
 		c.Locals("user_id", claims.UserID)
-		c.Locals("role_id", claims.RoleID)
+
+		roleID := claims.RoleID
+		var liveUser struct {
+			RoleID int `gorm:"column:role_id"`
+		}
+		if err := database.Get().Table("users").Select("role_id").Where("user_id = ?", claims.UserID).First(&liveUser).Error; err == nil && liveUser.RoleID > 0 {
+			roleID = liveUser.RoleID
+		}
+		c.Locals("role_id", roleID)
 		return c.Next()
 	}
 }

@@ -3,6 +3,7 @@ package routes
 import (
 	"alabapi/handlers"
 	"alabapi/middleware"
+	"alabapi/models"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -64,6 +65,7 @@ func SetupRoutes(app *fiber.App) {
 	api.Get("/users", middleware.RequireAuth(), middleware.RequireModule(26), handlers.GetUsers)
 	api.Get("/users/:id", middleware.RequireAuth(), handlers.GetUserByID)
 	api.Put("/users/:id/profile", middleware.RequireAuth(), handlers.UpdateUserProfile)
+	api.Put("/users/:id/role", middleware.RequireAuth(), middleware.RequireRoles(models.RefRoleAdmin), middleware.RequireModule(27), handlers.UpdateUserRole)
 
 	api.Get("/my-players", middleware.RequireAuth(), handlers.GetMyPlayers)
 	api.Get("/parents", middleware.RequireAuth(), handlers.GetParents)

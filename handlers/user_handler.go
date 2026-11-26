@@ -60,16 +60,127 @@ func findUserIDByName(name string, roleID int) (int, error) {
 
 func GetUsers(c *fiber.Ctx) error {
 	db := database.Get()
-	var users []models.User
+	query := db.Model(&models.User{}).
+		Preload("Profile").
+		Joins("LEFT JOIN user_profiles ON user_profiles.user_id = users.user_id")
 
-	roleID := c.Query("role_id")
-	if roleID != "" {
-		db.Preload("Profile").Where("role_id = ?", roleID).Find(&users)
-	} else {
-		db.Preload("Profile").Find(&users)
+	if role := strings.TrimSpace(c.Query("role")); role != "" {
+		if seq := getRefSeqnumByName(role); seq != nil {
+			query = query.Where("users.role_id = ?", *seq)
+		}
+	} else if roleID := strings.TrimSpace(c.Query("role_id")); roleID != "" {
+		query = query.Where("users.role_id = ?", roleID)
 	}
 
-	return c.JSON(users)
+	if search := strings.TrimSpace(c.Query("search")); search != "" {
+		like := "%" + search + "%"
+		query = query.Where(
+			"TRIM(COALESCE(user_profiles.first_name, '') || ' ' || COALESCE(user_profiles.last_name, '')) ILIKE ? OR "+
+				"users.username ILIKE ? OR users.email ILIKE ?",
+			like, like, like,
+		)
+	}
+
+	var users []models.User
+	query.Order("users.user_id ASC").Find(&users)
+
+	refMap := getRefMap()
+	result := make([]fiber.Map, 0, len(users))
+	for _, u := range users {
+		firstName, lastName, phone, avatar := "", "", "", ""
+		if u.Profile != nil {
+			firstName = u.Profile.FirstName
+			lastName = u.Profile.LastName
+			phone = u.Profile.PhoneNumber
+			avatar = u.Profile.AvatarURL
+		}
+		fullName := strings.TrimSpace(firstName + " " + lastName)
+		if fullName == "" {
+			fullName = u.Username
+		}
+		result = append(result, fiber.Map{
+			"user_id":       u.UserID,
+			"username":      u.Username,
+			"email":         u.Email,
+			"first_name":    firstName,
+			"last_name":     lastName,
+			"full_name":     fullName,
+			"phone_number":  phone,
+			"avatar_url":    avatar,
+			"role_id":       u.RoleID,
+			"role_name":     refMap[u.RoleID],
+			"status_id":     u.StatusID,
+			"status_name":   refMap[u.StatusID],
+			"is_verified":   u.IsVerified,
+			"last_login_at": u.LastLoginAt,
+			"created_at":    u.CreatedAt,
+			"profile":       u.Profile,
+		})
+	}
+
+	return c.JSON(result)
+}
+
+func UpdateUserRole(c *fiber.Ctx) error {
+	db := database.Get()
+	var user models.User
+	if err := db.Preload("Profile").First(&user, c.Params("id")).Error; err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "User not found"})
+	}
+
+	var req struct {
+		RoleID   *int   `json:"role_id"`
+		Role     string `json:"role"`
+		StatusID *int   `json:"status_id"`
+		Status   string `json:"status"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
+	}
+
+	newRoleID := user.RoleID
+	if req.RoleID != nil && *req.RoleID > 0 {
+		newRoleID = *req.RoleID
+	} else if strings.TrimSpace(req.Role) != "" {
+		seq := getRefSeqnumByName(req.Role)
+		if seq == nil {
+			return c.Status(400).JSON(fiber.Map{"error": "Invalid role name"})
+		}
+		newRoleID = *seq
+	}
+
+	loggedInID, _ := c.Locals("user_id").(int)
+	if user.UserID == loggedInID && newRoleID != models.RefRoleAdmin {
+		return c.Status(400).JSON(fiber.Map{"error": "You cannot remove your own Admin role"})
+	}
+
+	newStatusID := user.StatusID
+	if req.StatusID != nil && *req.StatusID > 0 {
+		newStatusID = *req.StatusID
+	} else if strings.TrimSpace(req.Status) != "" {
+		seq := getRefSeqnumByName(req.Status)
+		if seq == nil {
+			return c.Status(400).JSON(fiber.Map{"error": "Invalid status name"})
+		}
+		newStatusID = *seq
+	}
+
+	db.Model(&user).Updates(map[string]interface{}{
+		"role_id":    newRoleID,
+		"status_id":  newStatusID,
+		"updated_at": time.Now(),
+	})
+
+	refMap := getRefMap()
+	return c.JSON(fiber.Map{
+		"message":     "User role updated",
+		"user_id":     user.UserID,
+		"username":    user.Username,
+		"role_id":     newRoleID,
+		"role_name":   refMap[newRoleID],
+		"status_id":   newStatusID,
+		"status_name": refMap[newStatusID],
+	})
 }
 
 func GetParents(c *fiber.Ctx) error {
