@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"net/mail"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -13,25 +15,29 @@ import (
 )
 
 type PendingRegistration struct {
-	Username     string
-	Email        string
-	PasswordHash string
-	RoleID       int
-	StatusID     int
-	FirstName    string
-	MiddleName   string
-	LastName     string
-	Birthdate    *string
-	GenderID     *int
-	PhoneNumber  string
-	Address      string
-	AvatarURL    string
-	Secret       string
+	Username      string
+	Email         string
+	PasswordHash  string
+	RoleID        int
+	StatusID      int
+	FirstName     string
+	MiddleName    string
+	LastName      string
+	Birthdate     *string
+	GenderID      *int
+	PhoneNumber   string
+	Address       string
+	AvatarURL     string
+	Secret        string
+	EmailToken    string
+	EmailVerified bool
+	CreatedAt     time.Time
 }
 
 var (
 	pendingMu            sync.RWMutex
-	pendingRegistrations = make(map[string]PendingRegistration)
+	pendingRegistrations = make(map[string]*PendingRegistration)
+	pendingByToken       = make(map[string]*PendingRegistration)
 )
 
 func getRefSeqnumByName(details string) *int {
@@ -59,6 +65,14 @@ func getUserTOTPSecret(userID int) string {
 	return otp.Purpose
 }
 
+func resolveAppBaseURL(c *fiber.Ctx) string {
+	base := strings.Trim(strings.TrimSpace(os.Getenv("APP_BASE_URL")), "'\"")
+	if base != "" {
+		return strings.TrimRight(base, "/")
+	}
+	return strings.TrimRight(c.BaseURL(), "/")
+}
+
 func Register(c *fiber.Ctx) error {
 	var req struct {
 		Username    string  `json:"username"`
@@ -79,9 +93,13 @@ func Register(c *fiber.Ctx) error {
 	}
 
 	req.Username = strings.TrimSpace(req.Username)
-	req.Email = strings.TrimSpace(req.Email)
+	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 	if req.Username == "" || req.Email == "" || req.Password == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "username, email, and password are required"})
+	}
+
+	if _, err := mail.ParseAddress(req.Email); err != nil || !strings.Contains(req.Email, ".") {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid email address format"})
 	}
 
 	db := database.Get()
@@ -118,35 +136,164 @@ func Register(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to generate authenticator secret"})
 	}
 
-	pending := PendingRegistration{
-		Username:     req.Username,
-		Email:        req.Email,
-		PasswordHash: hashedPassword,
-		RoleID:       roleID,
-		StatusID:     statusID,
-		FirstName:    req.FirstName,
-		MiddleName:   req.MiddleName,
-		LastName:     req.LastName,
-		Birthdate:    req.Birthdate,
-		GenderID:     genderID,
-		PhoneNumber:  req.PhoneNumber,
-		Address:      req.Address,
-		AvatarURL:    req.AvatarURL,
-		Secret:       secret,
+	emailToken, err := utils.GenerateEmailToken()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to generate verification token"})
+	}
+
+	verifyLink := resolveAppBaseURL(c) + "/api/auth/verify-email?token=" + emailToken
+	if err := utils.SendVerificationEmail(req.Email, req.FirstName, verifyLink); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to send verification email: " + err.Error()})
+	}
+
+	pending := &PendingRegistration{
+		Username:      req.Username,
+		Email:         req.Email,
+		PasswordHash:  hashedPassword,
+		RoleID:        roleID,
+		StatusID:      statusID,
+		FirstName:     req.FirstName,
+		MiddleName:    req.MiddleName,
+		LastName:      req.LastName,
+		Birthdate:     req.Birthdate,
+		GenderID:      genderID,
+		PhoneNumber:   req.PhoneNumber,
+		Address:       req.Address,
+		AvatarURL:     req.AvatarURL,
+		Secret:        secret,
+		EmailToken:    emailToken,
+		EmailVerified: false,
+		CreatedAt:     time.Now(),
 	}
 
 	pendingMu.Lock()
 	pendingRegistrations[strings.ToLower(req.Username)] = pending
 	pendingRegistrations[strings.ToLower(req.Email)] = pending
+	pendingByToken[emailToken] = pending
 	pendingMu.Unlock()
 
-	otpauthURL, qrCodeURL := utils.BuildTOTPQRCode(req.Email, secret)
-
 	return c.Status(200).JSON(fiber.Map{
-		"message":     "Scan QR code and verify OTP to complete registration",
-		"secret":      secret,
-		"otpauth_url": otpauthURL,
-		"qr_code_url": qrCodeURL,
+		"message":        "Verification email sent. Please open your email and click Verify Account to unlock your QR code.",
+		"username":       req.Username,
+		"email":          req.Email,
+		"email_verified": false,
+	})
+}
+
+func VerifyEmailLink(c *fiber.Ctx) error {
+	token := strings.TrimSpace(c.Query("token"))
+	if token == "" {
+		return c.Status(400).Type("html").SendString("<h2>Invalid verification link</h2>")
+	}
+
+	pendingMu.Lock()
+	pending, exists := pendingByToken[token]
+	if exists {
+		pending.EmailVerified = true
+	}
+	pendingMu.Unlock()
+
+	if !exists {
+		return c.Status(404).Type("html").SendString(`<!DOCTYPE html>
+<html>
+<body style="font-family: Arial, sans-serif; background:#070d1d; color:#fff; display:flex; align-items:center; justify-content:center; height:100vh; margin:0;">
+  <div style="background:#0d152a; border:1px solid #ef4444; border-radius:16px; padding:32px; text-align:center; max-width:420px;">
+    <h2 style="color:#f87171; margin-top:0;">Link Expired or Invalid</h2>
+    <p style="color:#94a3b8;">This verification link is invalid or already used. Please register again.</p>
+  </div>
+</body>
+</html>`)
+	}
+
+	frontendRedirect := strings.Trim(strings.TrimSpace(os.Getenv("FRONTEND_VERIFY_URL")), "'\"")
+	if frontendRedirect != "" {
+		sep := "?"
+		if strings.Contains(frontendRedirect, "?") {
+			sep = "&"
+		}
+		return c.Redirect(frontendRedirect+sep+"email_verified=true&email="+pending.Email, fiber.StatusTemporaryRedirect)
+	}
+
+	return c.Status(200).Type("html").SendString(`<!DOCTYPE html>
+<html>
+<body style="font-family: Arial, sans-serif; background:#070d1d; color:#fff; display:flex; align-items:center; justify-content:center; height:100vh; margin:0;">
+  <div style="background:#0d152a; border:1px solid #22c55e; border-radius:16px; padding:36px; text-align:center; max-width:440px;">
+    <h2 style="color:#4ade80; margin-top:0;">Email Verified!</h2>
+    <p style="color:#cbd5e1; line-height:1.6;">Your email has been verified. You can now return to the ALAB FC registration page — your Google Authenticator QR Code is now ready to scan.</p>
+  </div>
+</body>
+</html>`)
+}
+
+func GetRegistrationStatus(c *fiber.Ctx) error {
+	key := strings.ToLower(strings.TrimSpace(c.Query("username_or_email")))
+	if key == "" {
+		key = strings.ToLower(strings.TrimSpace(c.Query("email")))
+	}
+	if key == "" {
+		key = strings.ToLower(strings.TrimSpace(c.Query("username")))
+	}
+	if key == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "username_or_email is required"})
+	}
+
+	pendingMu.RLock()
+	pending, exists := pendingRegistrations[key]
+	var isVerified bool
+	var email, secret string
+	if exists {
+		isVerified = pending.EmailVerified
+		email = pending.Email
+		secret = pending.Secret
+	}
+	pendingMu.RUnlock()
+
+	if !exists {
+		return c.Status(404).JSON(fiber.Map{"error": "No pending registration found"})
+	}
+
+	if !isVerified {
+		return c.JSON(fiber.Map{
+			"email_verified": false,
+			"message":        "Waiting for email verification. Please click the Verify Account link in your email.",
+		})
+	}
+
+	otpauthURL, qrCodeURL := utils.BuildTOTPQRCode(email, secret)
+	return c.JSON(fiber.Map{
+		"email_verified": true,
+		"message":        "Email verified! Scan the QR code with Google Authenticator and enter the 6-digit OTP.",
+		"secret":         secret,
+		"otpauth_url":    otpauthURL,
+		"qr_code_url":    qrCodeURL,
+	})
+}
+
+func ResendVerificationEmail(c *fiber.Ctx) error {
+	var req struct {
+		UsernameOrEmail string `json:"username_or_email"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
+	}
+
+	key := strings.ToLower(strings.TrimSpace(req.UsernameOrEmail))
+	pendingMu.RLock()
+	pending, exists := pendingRegistrations[key]
+	pendingMu.RUnlock()
+
+	if !exists {
+		return c.Status(404).JSON(fiber.Map{"error": "No pending registration found"})
+	}
+
+	verifyLink := resolveAppBaseURL(c) + "/api/auth/verify-email?token=" + pending.EmailToken
+	if err := utils.SendVerificationEmail(pending.Email, pending.FirstName, verifyLink); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to resend verification email: " + err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "Verification email resent",
+		"email":   pending.Email,
 	})
 }
 
@@ -168,6 +315,10 @@ func VerifyAuthenticator(c *fiber.Ctx) error {
 
 	if !exists {
 		return c.Status(404).JSON(fiber.Map{"error": "No pending registration found for this username or email"})
+	}
+
+	if !pending.EmailVerified {
+		return c.Status(403).JSON(fiber.Map{"error": "Please verify your email first by clicking the Verify Account link sent to your inbox"})
 	}
 
 	if !utils.VerifyTOTPCode(pending.Secret, req.OTPCode) {
@@ -213,6 +364,7 @@ func VerifyAuthenticator(c *fiber.Ctx) error {
 	pendingMu.Lock()
 	delete(pendingRegistrations, strings.ToLower(pending.Username))
 	delete(pendingRegistrations, strings.ToLower(pending.Email))
+	delete(pendingByToken, pending.EmailToken)
 	pendingMu.Unlock()
 
 	return c.Status(201).JSON(fiber.Map{

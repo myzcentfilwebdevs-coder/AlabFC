@@ -31,6 +31,9 @@ func SetupRoutes(app *fiber.App) {
 	api.Delete("/references/:seqnum", middleware.RequireAuth(), middleware.RequireModule(28), handlers.DeleteReference)
 
 	api.Post("/auth/register", handlers.Register)
+	api.Get("/auth/verify-email", handlers.VerifyEmailLink)
+	api.Get("/auth/registration-status", handlers.GetRegistrationStatus)
+	api.Post("/auth/resend-verification", handlers.ResendVerificationEmail)
 	api.Post("/auth/verify-otp", handlers.VerifyAuthenticator)
 	api.Post("/auth/login", handlers.Login)
 	api.Post("/auth/forgot-password", handlers.ForgotPassword)

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,37 @@ func getRefMap() map[int]string {
 		m[r.Seqnum] = r.Details
 	}
 	return m
+}
+
+func resolveAttendanceStatus(statusID *int, statusName string) (*int, string, error) {
+	if strings.TrimSpace(statusName) != "" {
+		lower := strings.ToLower(strings.TrimSpace(statusName))
+		if lower != "present" && lower != "absent" {
+			return nil, "", fmt.Errorf("status must be Present or Absent")
+		}
+		seq := getRefSeqnumByName(statusName)
+		if seq == nil {
+			if lower == "present" {
+				id := 32
+				seq = &id
+			} else {
+				id := 33
+				seq = &id
+			}
+		}
+		return seq, lower, nil
+	}
+
+	if statusID != nil {
+		refMap := getRefMap()
+		name := strings.ToLower(strings.TrimSpace(refMap[*statusID]))
+		if name != "present" && name != "absent" {
+			return nil, "", fmt.Errorf("status_id must be Present or Absent")
+		}
+		return statusID, name, nil
+	}
+
+	return nil, "", fmt.Errorf("status is required (Present or Absent)")
 }
 
 func GetTrainingSessions(c *fiber.Ctx) error {
@@ -179,7 +211,7 @@ func GetSessionAttendance(c *fiber.Ctx) error {
 		if len(childIDs) == 0 {
 			return c.JSON(fiber.Map{
 				"session": session,
-				"summary": fiber.Map{"total_players": 0, "present": 0, "absent": 0, "late": 0, "excused": 0, "unmarked": 0},
+				"summary": fiber.Map{"total_players": 0, "present": 0, "absent": 0, "unmarked": 0},
 				"players": []fiber.Map{},
 			})
 		}
@@ -204,7 +236,7 @@ func GetSessionAttendance(c *fiber.Ctx) error {
 	}
 
 	refMap := getRefMap()
-	presentCount, absentCount, lateCount, excusedCount, unmarkedCount := 0, 0, 0, 0, 0
+	presentCount, absentCount, unmarkedCount := 0, 0, 0
 
 	rows := make([]fiber.Map, 0, len(players))
 	for _, p := range players {
@@ -244,15 +276,14 @@ func GetSessionAttendance(c *fiber.Ctx) error {
 			}
 		}
 
-		switch strings.ToLower(statusName) {
+		lowerStatus := strings.ToLower(statusName)
+		attended := lowerStatus == "present"
+
+		switch lowerStatus {
 		case "present":
 			presentCount++
 		case "absent":
 			absentCount++
-		case "late":
-			lateCount++
-		case "excused":
-			excusedCount++
 		default:
 			unmarkedCount++
 		}
@@ -269,6 +300,7 @@ func GetSessionAttendance(c *fiber.Ctx) error {
 			"attendance_id":  attendanceID,
 			"status_id":      statusID,
 			"status":         statusName,
+			"attended":       attended,
 			"check_in_time":  checkInTime,
 			"remarks":        remarks,
 		})
@@ -280,8 +312,6 @@ func GetSessionAttendance(c *fiber.Ctx) error {
 			"total_players": len(rows),
 			"present":       presentCount,
 			"absent":        absentCount,
-			"late":          lateCount,
-			"excused":       excusedCount,
 			"unmarked":      unmarkedCount,
 		},
 		"players": rows,
@@ -289,30 +319,36 @@ func GetSessionAttendance(c *fiber.Ctx) error {
 }
 
 func upsertPlayerAttendance(sessionID, playerUserID int, statusID *int, statusName, remarks string, recordedBy *int) (models.PlayerAttendance, error) {
-	if statusID == nil && strings.TrimSpace(statusName) != "" {
-		statusID = getRefSeqnumByName(statusName)
+	resolvedID, lowerStatus, err := resolveAttendanceStatus(statusID, statusName)
+	if err != nil {
+		return models.PlayerAttendance{}, err
+	}
+
+	var checkIn *time.Time
+	if lowerStatus == "present" {
+		now := time.Now()
+		checkIn = &now
 	}
 
 	db := database.Get()
 	var record models.PlayerAttendance
-	now := time.Now()
 
-	err := db.Where("session_id = ? AND player_user_id = ?", sessionID, playerUserID).First(&record).Error
+	err = db.Where("session_id = ? AND player_user_id = ?", sessionID, playerUserID).First(&record).Error
 	if err != nil {
 		record = models.PlayerAttendance{
 			SessionID:    sessionID,
 			PlayerUserID: playerUserID,
-			StatusID:     statusID,
-			CheckInTime:  &now,
+			StatusID:     resolvedID,
+			CheckInTime:  checkIn,
 			Remarks:      remarks,
 			RecordedBy:   recordedBy,
 		}
 		err = db.Create(&record).Error
 	} else {
-		record.StatusID = statusID
+		record.StatusID = resolvedID
 		record.Remarks = remarks
 		record.RecordedBy = recordedBy
-		record.CheckInTime = &now
+		record.CheckInTime = checkIn
 		err = db.Save(&record).Error
 	}
 
@@ -336,10 +372,6 @@ func RecordAttendance(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "session_id and player_user_id are required"})
 	}
 
-	if req.StatusID == nil && strings.TrimSpace(req.Status) == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "status or status_id is required"})
-	}
-
 	var recordedBy *int
 	if uid, ok := c.Locals("user_id").(int); ok && uid > 0 {
 		recordedBy = &uid
@@ -347,7 +379,7 @@ func RecordAttendance(c *fiber.Ctx) error {
 
 	record, err := upsertPlayerAttendance(req.SessionID, req.PlayerUserID, req.StatusID, req.Status, req.Remarks, recordedBy)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 
 	database.Get().Preload("Status").Preload("Player.Profile").First(&record, record.AttendanceID)
@@ -456,7 +488,7 @@ func GetPlayerAttendanceHistory(c *fiber.Ctx) error {
 		}
 	}
 
-	present, absent, late, excused := 0, 0, 0, 0
+	present, absent := 0, 0
 	attendedToday := false
 	todayStatus := ""
 	dailyList := make([]fiber.Map, 0, len(records))
@@ -467,9 +499,7 @@ func GetPlayerAttendanceHistory(c *fiber.Ctx) error {
 			statusName = r.Status.Details
 		}
 
-		sessionDate := ""
-		sessionTitle := ""
-		venue := ""
+		sessionDate, sessionTitle, venue := "", "", ""
 		if r.Session != nil {
 			sessionDate = r.Session.SessionDate
 			if len(sessionDate) >= 10 {
@@ -480,24 +510,20 @@ func GetPlayerAttendanceHistory(c *fiber.Ctx) error {
 		}
 
 		lowerStatus := strings.ToLower(statusName)
-		attended := lowerStatus == "present" || lowerStatus == "late"
+		if lowerStatus != "present" && lowerStatus != "absent" {
+			continue
+		}
 
-		switch lowerStatus {
-		case "present":
+		attended := lowerStatus == "present"
+		if attended {
 			present++
-		case "absent":
+		} else {
 			absent++
-		case "late":
-			late++
-		case "excused":
-			excused++
 		}
 
 		if sessionDate == today {
 			todayStatus = statusName
-			if attended {
-				attendedToday = true
-			}
+			attendedToday = attended
 		}
 
 		dailyList = append(dailyList, fiber.Map{
@@ -514,9 +540,10 @@ func GetPlayerAttendanceHistory(c *fiber.Ctx) error {
 		})
 	}
 
+	totalCount := present + absent
 	rate := 0.0
-	if len(records) > 0 {
-		rate = float64(present+late) / float64(len(records)) * 100
+	if totalCount > 0 {
+		rate = float64(present) / float64(totalCount) * 100
 	}
 
 	return c.JSON(fiber.Map{
@@ -534,11 +561,9 @@ func GetPlayerAttendanceHistory(c *fiber.Ctx) error {
 		"attended_today": attendedToday,
 		"today_status":   todayStatus,
 		"summary": fiber.Map{
-			"total":           len(records),
+			"total":           totalCount,
 			"present":         present,
 			"absent":          absent,
-			"late":            late,
-			"excused":         excused,
 			"attendance_rate": rate,
 		},
 		"history": dailyList,
@@ -619,7 +644,7 @@ func GetAllPlayersAttendanceHistory(c *fiber.Ctx) error {
 		}
 
 		pRecords := recordsByPlayer[p.UserID]
-		present, absent, late, excused := 0, 0, 0, 0
+		present, absent := 0, 0
 		attendedToday := false
 		todayStatus := ""
 		history := make([]fiber.Map, 0, len(pRecords))
@@ -639,24 +664,20 @@ func GetAllPlayersAttendanceHistory(c *fiber.Ctx) error {
 			}
 
 			lowerStatus := strings.ToLower(statusName)
-			attended := lowerStatus == "present" || lowerStatus == "late"
+			if lowerStatus != "present" && lowerStatus != "absent" {
+				continue
+			}
 
-			switch lowerStatus {
-			case "present":
+			attended := lowerStatus == "present"
+			if attended {
 				present++
-			case "absent":
+			} else {
 				absent++
-			case "late":
-				late++
-			case "excused":
-				excused++
 			}
 
 			if sessionDate == today {
 				todayStatus = statusName
-				if attended {
-					attendedToday = true
-				}
+				attendedToday = attended
 			}
 
 			history = append(history, fiber.Map{
@@ -671,9 +692,10 @@ func GetAllPlayersAttendanceHistory(c *fiber.Ctx) error {
 			})
 		}
 
+		totalCount := present + absent
 		rate := 0.0
-		if len(pRecords) > 0 {
-			rate = float64(present+late) / float64(len(pRecords)) * 100
+		if totalCount > 0 {
+			rate = float64(present) / float64(totalCount) * 100
 		}
 
 		result = append(result, fiber.Map{
@@ -688,11 +710,9 @@ func GetAllPlayersAttendanceHistory(c *fiber.Ctx) error {
 			"attended_today": attendedToday,
 			"today_status":   todayStatus,
 			"summary": fiber.Map{
-				"total":           len(pRecords),
+				"total":           totalCount,
 				"present":         present,
 				"absent":          absent,
-				"late":            late,
-				"excused":         excused,
 				"attendance_rate": rate,
 			},
 			"history": history,
@@ -727,7 +747,7 @@ func GetDailyAttendance(c *fiber.Ctx) error {
 			return c.JSON(fiber.Map{
 				"date":       date,
 				"session_id": nil,
-				"summary":    fiber.Map{"total_players": 0, "present": 0, "absent": 0, "late": 0, "excused": 0, "unmarked": 0},
+				"summary":    fiber.Map{"total_players": 0, "present": 0, "absent": 0, "unmarked": 0},
 				"players":    []fiber.Map{},
 			})
 		}
@@ -764,7 +784,7 @@ func GetDailyAttendance(c *fiber.Ctx) error {
 	}
 
 	refMap := getRefMap()
-	presentCount, absentCount, lateCount, excusedCount, unmarkedCount := 0, 0, 0, 0, 0
+	presentCount, absentCount, unmarkedCount := 0, 0, 0
 
 	rows := make([]fiber.Map, 0, len(players))
 	for _, p := range players {
@@ -808,18 +828,15 @@ func GetDailyAttendance(c *fiber.Ctx) error {
 		}
 
 		lowerStatus := strings.ToLower(statusName)
-		attended := lowerStatus == "present" || lowerStatus == "late"
+		attended := lowerStatus == "present"
 
 		switch lowerStatus {
 		case "present":
 			presentCount++
 		case "absent":
 			absentCount++
-		case "late":
-			lateCount++
-		case "excused":
-			excusedCount++
 		default:
+			statusName = ""
 			unmarkedCount++
 		}
 
@@ -855,8 +872,6 @@ func GetDailyAttendance(c *fiber.Ctx) error {
 			"total_players": len(rows),
 			"present":       presentCount,
 			"absent":        absentCount,
-			"late":          lateCount,
-			"excused":       excusedCount,
 			"unmarked":      unmarkedCount,
 		},
 		"players": rows,
@@ -929,7 +944,7 @@ func RecordDailyAttendance(c *fiber.Ctx) error {
 
 	record, err := upsertPlayerAttendance(session.SessionID, req.PlayerUserID, req.StatusID, req.Status, req.Remarks, recordedBy)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 
 	db.Preload("Status").Preload("Player.Profile").First(&record, record.AttendanceID)

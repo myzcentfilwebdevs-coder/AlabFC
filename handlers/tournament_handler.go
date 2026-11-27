@@ -483,8 +483,38 @@ func UpdateTournament(c *fiber.Ctx) error {
 }
 
 func DeleteTournament(c *fiber.Ctx) error {
-	database.Get().Delete(&models.Tournament{}, c.Params("id"))
-	return c.JSON(fiber.Map{"message": "Tournament deleted"})
+	tournamentID, err := strconv.Atoi(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid tournament_id"})
+	}
+
+	var deletedRows int64
+	err = database.Get().Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("tournament_id = ?", tournamentID).Delete(&models.TournamentMatch{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("tournament_id = ?", tournamentID).Delete(&models.TournamentRoster{}).Error; err != nil {
+			return err
+		}
+		res := tx.Where("tournament_id = ?", tournamentID).Delete(&models.Tournament{})
+		if res.Error != nil {
+			return res.Error
+		}
+		deletedRows = res.RowsAffected
+		return nil
+	})
+
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	if deletedRows == 0 {
+		return c.Status(404).JSON(fiber.Map{"error": "Tournament not found"})
+	}
+
+	return c.JSON(fiber.Map{
+		"message":       "Tournament deleted",
+		"tournament_id": tournamentID,
+	})
 }
 
 func GetTournamentMatches(c *fiber.Ctx) error {
@@ -679,8 +709,23 @@ func UpdateTournamentMatch(c *fiber.Ctx) error {
 }
 
 func DeleteTournamentMatch(c *fiber.Ctx) error {
-	database.Get().Delete(&models.TournamentMatch{}, c.Params("match_id"))
-	return c.JSON(fiber.Map{"message": "Match deleted"})
+	matchID, err := strconv.Atoi(c.Params("match_id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid match_id"})
+	}
+
+	res := database.Get().Where("match_id = ?", matchID).Delete(&models.TournamentMatch{})
+	if res.Error != nil {
+		return c.Status(500).JSON(fiber.Map{"error": res.Error.Error()})
+	}
+	if res.RowsAffected == 0 {
+		return c.Status(404).JSON(fiber.Map{"error": "Match not found"})
+	}
+
+	return c.JSON(fiber.Map{
+		"message":  "Match deleted",
+		"match_id": matchID,
+	})
 }
 
 func GetTournamentRoster(c *fiber.Ctx) error {
@@ -810,6 +855,21 @@ func UpdateParentConsent(c *fiber.Ctx) error {
 }
 
 func RemoveTournamentRoster(c *fiber.Ctx) error {
-	database.Get().Delete(&models.TournamentRoster{}, c.Params("roster_id"))
-	return c.JSON(fiber.Map{"message": "Player removed from tournament roster"})
+	rosterID, err := strconv.Atoi(c.Params("roster_id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid roster_id"})
+	}
+
+	res := database.Get().Where("roster_id = ?", rosterID).Delete(&models.TournamentRoster{})
+	if res.Error != nil {
+		return c.Status(500).JSON(fiber.Map{"error": res.Error.Error()})
+	}
+	if res.RowsAffected == 0 {
+		return c.Status(404).JSON(fiber.Map{"error": "Roster entry not found"})
+	}
+
+	return c.JSON(fiber.Map{
+		"message":   "Player removed from tournament roster",
+		"roster_id": rosterID,
+	})
 }
