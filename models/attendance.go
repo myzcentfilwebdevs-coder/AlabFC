@@ -23,14 +23,14 @@ func (TrainingSession) TableName() string {
 type PlayerAttendance struct {
 	AttendanceID int               `gorm:"column:attendance_id;primaryKey;autoIncrement" json:"attendance_id"`
 	SessionID    int               `gorm:"column:session_id" json:"session_id"`
-	PlayerUserID int               `gorm:"column:player_user_id" json:"player_user_id"`
+	PlayerID     int               `gorm:"column:player_id" json:"player_id"`
 	StatusID     *int              `gorm:"column:status_id" json:"status_id"`
 	CheckInTime  *time.Time        `gorm:"column:check_in_time" json:"check_in_time"`
 	Remarks      string            `gorm:"column:remarks" json:"remarks"`
 	RecordedBy   *int              `gorm:"column:recorded_by" json:"recorded_by"`
 	CreatedAt    time.Time         `gorm:"column:created_at" json:"created_at"`
 	Session      *TrainingSession  `gorm:"foreignKey:SessionID;references:SessionID" json:"session,omitempty"`
-	Player       *User             `gorm:"foreignKey:PlayerUserID;references:UserID" json:"player,omitempty"`
+	Player       *Player           `gorm:"foreignKey:PlayerID;references:PlayerID" json:"player,omitempty"`
 	Status       *GenericReference `gorm:"foreignKey:StatusID;references:Seqnum" json:"status,omitempty"`
 }
 

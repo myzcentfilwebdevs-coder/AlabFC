@@ -93,23 +93,23 @@ func formatMatch(m models.TournamentMatch, refMap map[int]string) fiber.Map {
 func formatRoster(r models.TournamentRoster, refMap map[int]string) fiber.Map {
 	firstName, lastName, ageCat, pos, avatar := "", "", "", "", ""
 	var jersey *int
-	if r.Player != nil && r.Player.Profile != nil {
-		firstName = r.Player.Profile.FirstName
-		lastName = r.Player.Profile.LastName
-		jersey = r.Player.Profile.JerseyNumber
-		avatar = r.Player.Profile.AvatarURL
-		if r.Player.Profile.AgeCategoryID != nil {
-			ageCat = refMap[*r.Player.Profile.AgeCategoryID]
+	if r.Player != nil {
+		firstName = r.Player.FirstName
+		lastName = r.Player.LastName
+		jersey = r.Player.JerseyNumber
+		avatar = r.Player.AvatarURL
+		if r.Player.AgeCategoryID != nil {
+			ageCat = refMap[*r.Player.AgeCategoryID]
 		}
-		if r.Player.Profile.PositionID != nil {
-			pos = refMap[*r.Player.Profile.PositionID]
+		if r.Player.PositionID != nil {
+			pos = refMap[*r.Player.PositionID]
 		}
 	}
 
 	return fiber.Map{
 		"roster_id":      r.RosterID,
 		"tournament_id":  r.TournamentID,
-		"player_user_id": r.PlayerUserID,
+		"player_id":      r.PlayerID,
 		"first_name":     firstName,
 		"last_name":      lastName,
 		"full_name":      strings.TrimSpace(firstName + " " + lastName),
@@ -271,7 +271,7 @@ func GetTournamentByID(c *fiber.Ctx) error {
 			}
 			return q
 		}).
-		Preload("Rosters.Player.Profile").
+		Preload("Rosters.Player").
 		First(&t, c.Params("id")).Error
 
 	if err != nil {
@@ -281,7 +281,7 @@ func GetTournamentByID(c *fiber.Ctx) error {
 	if filterCatID != nil {
 		filteredRosters := make([]models.TournamentRoster, 0)
 		for _, r := range t.Rosters {
-			if r.Player != nil && r.Player.Profile != nil && r.Player.Profile.AgeCategoryID != nil && *r.Player.Profile.AgeCategoryID == *filterCatID {
+			if r.Player != nil && r.Player.AgeCategoryID != nil && *r.Player.AgeCategoryID == *filterCatID {
 				filteredRosters = append(filteredRosters, r)
 			}
 		}
@@ -404,7 +404,7 @@ func CreateTournament(c *fiber.Ctx) error {
 		Preload("Matches", func(tx *gorm.DB) *gorm.DB {
 			return tx.Preload("AgeCategory").Preload("Status").Order("match_date ASC, match_time ASC, match_id ASC")
 		}).
-		Preload("Rosters.Player.Profile").
+		Preload("Rosters.Player").
 		First(&t, t.TournamentID)
 
 	return c.Status(201).JSON(fiber.Map{
@@ -474,7 +474,7 @@ func UpdateTournament(c *fiber.Ctx) error {
 	t.UpdatedAt = time.Now()
 
 	db.Save(&t)
-	db.Preload("Status").Preload("Matches.AgeCategory").Preload("Matches.Status").Preload("Rosters.Player.Profile").First(&t, t.TournamentID)
+	db.Preload("Status").Preload("Matches.AgeCategory").Preload("Matches.Status").Preload("Rosters.Player").First(&t, t.TournamentID)
 
 	return c.JSON(fiber.Map{
 		"message": "Tournament updated",
@@ -736,7 +736,7 @@ func GetTournamentRoster(c *fiber.Ctx) error {
 
 	var rosters []models.TournamentRoster
 	database.Get().
-		Preload("Player.Profile").
+		Preload("Player").
 		Where("tournament_id = ?", tournamentID).
 		Order("roster_id ASC").
 		Find(&rosters)
@@ -753,7 +753,7 @@ func GetTournamentRoster(c *fiber.Ctx) error {
 	result := make([]fiber.Map, 0, len(rosters))
 	for _, r := range rosters {
 		if filterCatID > 0 {
-			if r.Player == nil || r.Player.Profile == nil || r.Player.Profile.AgeCategoryID == nil || *r.Player.Profile.AgeCategoryID != filterCatID {
+			if r.Player == nil || r.Player.AgeCategoryID == nil || *r.Player.AgeCategoryID != filterCatID {
 				continue
 			}
 		}
@@ -770,6 +770,8 @@ func AddTournamentRoster(c *fiber.Ctx) error {
 	}
 
 	var req struct {
+		PlayerID      int      `json:"player_id"`
+		PlayerIDs     []int    `json:"player_ids"`
 		PlayerUserID  int      `json:"player_user_id"`
 		PlayerUserIDs []int    `json:"player_user_ids"`
 		PlayerNames   []string `json:"player_names"`
@@ -780,18 +782,26 @@ func AddTournamentRoster(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
+	seen := make(map[int]bool)
 	playerIDs := make([]int, 0)
-	if req.PlayerUserID > 0 {
-		playerIDs = append(playerIDs, req.PlayerUserID)
-	}
-	for _, id := range req.PlayerUserIDs {
-		if id > 0 {
+	addPlayer := func(id int) {
+		if id > 0 && !seen[id] {
+			seen[id] = true
 			playerIDs = append(playerIDs, id)
 		}
 	}
+
+	addPlayer(req.PlayerID)
+	addPlayer(req.PlayerUserID)
+	for _, id := range req.PlayerIDs {
+		addPlayer(id)
+	}
+	for _, id := range req.PlayerUserIDs {
+		addPlayer(id)
+	}
 	for _, name := range req.PlayerNames {
-		if pid, err := findUserIDByName(name, models.RefRolePlayer); err == nil {
-			playerIDs = append(playerIDs, pid)
+		if pid, err := findPlayerIDByName(name); err == nil {
+			addPlayer(pid)
 		}
 	}
 
@@ -803,12 +813,12 @@ func AddTournamentRoster(c *fiber.Ctx) error {
 	added := 0
 	for _, pid := range playerIDs {
 		var existing models.TournamentRoster
-		if err := db.Where("tournament_id = ? AND player_user_id = ?", tournamentID, pid).First(&existing).Error; err == nil {
+		if err := db.Where("tournament_id = ? AND player_id = ?", tournamentID, pid).First(&existing).Error; err == nil {
 			continue
 		}
 		roster := models.TournamentRoster{
 			TournamentID:  tournamentID,
-			PlayerUserID:  pid,
+			PlayerID:      pid,
 			ParentConsent: false,
 			Remarks:       strings.TrimSpace(req.Remarks),
 		}
@@ -830,7 +840,7 @@ func UpdateParentConsent(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "Roster entry not found"})
 	}
 
-	if !canAccessPlayer(c, roster.PlayerUserID) {
+	if !canAccessPlayer(c, roster.PlayerID) {
 		return c.Status(403).JSON(fiber.Map{"error": "Forbidden: you can only give consent for your own child"})
 	}
 

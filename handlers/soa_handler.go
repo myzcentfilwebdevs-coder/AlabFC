@@ -48,11 +48,11 @@ func formatSOAResponse(soa models.StatementOfAccount, refMap map[int]string) fib
 	playerName := ""
 	ageCategory := ""
 	var jersey *int
-	if soa.Player != nil && soa.Player.Profile != nil {
-		playerName = strings.TrimSpace(soa.Player.Profile.FirstName + " " + soa.Player.Profile.LastName)
-		jersey = soa.Player.Profile.JerseyNumber
-		if soa.Player.Profile.AgeCategoryID != nil {
-			ageCategory = refMap[*soa.Player.Profile.AgeCategoryID]
+	if soa.Player != nil {
+		playerName = strings.TrimSpace(soa.Player.FirstName + " " + soa.Player.LastName)
+		jersey = soa.Player.JerseyNumber
+		if soa.Player.AgeCategoryID != nil {
+			ageCategory = refMap[*soa.Player.AgeCategoryID]
 		}
 	}
 
@@ -76,7 +76,7 @@ func formatSOAResponse(soa models.StatementOfAccount, refMap map[int]string) fib
 	return fiber.Map{
 		"soa_id":         soa.SOAID,
 		"soa_number":     soa.SOANumber,
-		"player_user_id": soa.PlayerUserID,
+		"player_id":      soa.PlayerID,
 		"player_name":    playerName,
 		"jersey_number":  jersey,
 		"age_category":   ageCategory,
@@ -102,7 +102,7 @@ func GetSOAs(c *fiber.Ctx) error {
 	db := database.Get()
 
 	query := db.Model(&models.StatementOfAccount{}).
-		Preload("Player.Profile").
+		Preload("Player").
 		Preload("Parent.Profile").
 		Preload("Status").
 		Preload("Items.FeeType").
@@ -111,12 +111,10 @@ func GetSOAs(c *fiber.Ctx) error {
 	if roleID == models.RefRoleParent {
 		childIDs := getParentChildIDs(userID)
 		if len(childIDs) > 0 {
-			query = query.Where("parent_user_id = ? OR player_user_id IN ?", userID, childIDs)
+			query = query.Where("parent_user_id = ? OR player_id IN ?", userID, childIDs)
 		} else {
 			query = query.Where("parent_user_id = ?", userID)
 		}
-	} else if roleID == models.RefRolePlayer {
-		query = query.Where("player_user_id = ?", userID)
 	} else if roleID != models.RefRoleAdmin {
 		return c.Status(403).JSON(fiber.Map{"error": "Forbidden"})
 	}
@@ -126,13 +124,18 @@ func GetSOAs(c *fiber.Ctx) error {
 			query = query.Where("status_id = ?", *seq)
 		}
 	}
-	if playerID := strings.TrimSpace(c.Query("player_user_id")); playerID != "" {
-		pid, err := strconv.Atoi(playerID)
+
+	playerParam := strings.TrimSpace(c.Query("player_id"))
+	if playerParam == "" {
+		playerParam = strings.TrimSpace(c.Query("player_user_id"))
+	}
+	if playerParam != "" {
+		pid, err := strconv.Atoi(playerParam)
 		if err == nil {
 			if !canAccessPlayer(c, pid) {
 				return c.Status(403).JSON(fiber.Map{"error": "Forbidden: you cannot view another child's SOA"})
 			}
-			query = query.Where("player_user_id = ?", pid)
+			query = query.Where("player_id = ?", pid)
 		}
 	}
 
@@ -164,7 +167,7 @@ func GetSOAs(c *fiber.Ctx) error {
 func GetSOAByID(c *fiber.Ctx) error {
 	db := database.Get()
 	var soa models.StatementOfAccount
-	err := db.Preload("Player.Profile").
+	err := db.Preload("Player").
 		Preload("Parent.Profile").
 		Preload("Status").
 		Preload("Items.FeeType").
@@ -194,12 +197,12 @@ func GetPlayerSOAs(c *fiber.Ctx) error {
 
 	var soas []models.StatementOfAccount
 	database.Get().
-		Preload("Player.Profile").
+		Preload("Player").
 		Preload("Parent.Profile").
 		Preload("Status").
 		Preload("Items.FeeType").
 		Preload("Payments.PaymentMethod").
-		Where("player_user_id = ?", playerID).
+		Where("player_id = ?", playerID).
 		Order("due_date DESC, soa_id DESC").
 		Find(&soas)
 
@@ -215,8 +218,8 @@ func GetPlayerSOAs(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"player_user_id": playerID,
-		"count":          len(result),
+		"player_id": playerID,
+		"count":     len(result),
 		"summary": fiber.Map{
 			"total_billed":  totalBilled,
 			"total_paid":    totalPaid,
@@ -229,6 +232,7 @@ func GetPlayerSOAs(c *fiber.Ctx) error {
 func CreateSOA(c *fiber.Ctx) error {
 	var req struct {
 		SOANumber     string `json:"soa_number"`
+		PlayerID      int    `json:"player_id"`
 		PlayerUserID  int    `json:"player_user_id"`
 		ParentUserID  *int   `json:"parent_user_id"`
 		BillingPeriod string `json:"billing_period"`
@@ -246,8 +250,13 @@ func CreateSOA(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
-	if req.PlayerUserID == 0 || strings.TrimSpace(req.BillingPeriod) == "" || strings.TrimSpace(req.DueDate) == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "player_user_id, billing_period, and due_date are required"})
+	pid := req.PlayerID
+	if pid == 0 {
+		pid = req.PlayerUserID
+	}
+
+	if pid == 0 || strings.TrimSpace(req.BillingPeriod) == "" || strings.TrimSpace(req.DueDate) == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "player_id, billing_period, and due_date are required"})
 	}
 
 	db := database.Get()
@@ -255,9 +264,9 @@ func CreateSOA(c *fiber.Ctx) error {
 	parentID := req.ParentUserID
 	if parentID == nil {
 		var link models.ParentPlayer
-		if err := db.Where("player_user_id = ?", req.PlayerUserID).First(&link).Error; err == nil {
-			pid := link.ParentUserID
-			parentID = &pid
+		if err := db.Where("player_id = ?", pid).First(&link).Error; err == nil {
+			parentCopy := link.ParentUserID
+			parentID = &parentCopy
 		}
 	}
 
@@ -274,7 +283,7 @@ func CreateSOA(c *fiber.Ctx) error {
 	unpaidStatus := models.RefSOAUnpaid
 	soa := models.StatementOfAccount{
 		SOANumber:     soaNumber,
-		PlayerUserID:  req.PlayerUserID,
+		PlayerID:      pid,
 		ParentUserID:  parentID,
 		BillingPeriod: strings.TrimSpace(req.BillingPeriod),
 		DueDate:       strings.TrimSpace(req.DueDate),
@@ -305,7 +314,7 @@ func CreateSOA(c *fiber.Ctx) error {
 
 	recalculateSOA(soa.SOAID)
 
-	db.Preload("Player.Profile").
+	db.Preload("Player").
 		Preload("Parent.Profile").
 		Preload("Status").
 		Preload("Items.FeeType").
@@ -377,7 +386,7 @@ func UpdateSOA(c *fiber.Ctx) error {
 		recalculateSOA(soa.SOAID)
 	}
 
-	db.Preload("Player.Profile").
+	db.Preload("Player").
 		Preload("Parent.Profile").
 		Preload("Status").
 		Preload("Items.FeeType").
@@ -391,7 +400,17 @@ func UpdateSOA(c *fiber.Ctx) error {
 }
 
 func DeleteSOA(c *fiber.Ctx) error {
-	database.Get().Delete(&models.StatementOfAccount{}, c.Params("id"))
+	soaID, err := strconv.Atoi(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid soa_id"})
+	}
+	res := database.Get().Where("soa_id = ?", soaID).Delete(&models.StatementOfAccount{})
+	if res.Error != nil {
+		return c.Status(500).JSON(fiber.Map{"error": res.Error.Error()})
+	}
+	if res.RowsAffected == 0 {
+		return c.Status(404).JSON(fiber.Map{"error": "SOA not found"})
+	}
 	return c.JSON(fiber.Map{"message": "SOA deleted"})
 }
 
@@ -450,7 +469,7 @@ func SubmitSOAPayment(c *fiber.Ctx) error {
 
 	recalculateSOA(soa.SOAID)
 
-	db.Preload("Player.Profile").
+	db.Preload("Player").
 		Preload("Parent.Profile").
 		Preload("Status").
 		Preload("Items.FeeType").

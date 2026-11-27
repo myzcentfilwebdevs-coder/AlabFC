@@ -50,11 +50,11 @@ func (TournamentMatch) TableName() string {
 type TournamentRoster struct {
 	RosterID      int       `gorm:"column:roster_id;primaryKey;autoIncrement" json:"roster_id"`
 	TournamentID  int       `gorm:"column:tournament_id" json:"tournament_id"`
-	PlayerUserID  int       `gorm:"column:player_user_id" json:"player_user_id"`
+	PlayerID      int       `gorm:"column:player_id" json:"player_id"`
 	ParentConsent bool      `gorm:"column:parent_consent" json:"parent_consent"`
 	Remarks       string    `gorm:"column:remarks" json:"remarks"`
 	CreatedAt     time.Time `gorm:"column:created_at" json:"created_at"`
-	Player        *User     `gorm:"foreignKey:PlayerUserID;references:UserID" json:"player,omitempty"`
+	Player        *Player   `gorm:"foreignKey:PlayerID;references:PlayerID" json:"player,omitempty"`
 }
 
 func (TournamentRoster) TableName() string {

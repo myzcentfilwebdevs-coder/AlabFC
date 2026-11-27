@@ -21,21 +21,18 @@ func (User) TableName() string {
 }
 
 type UserProfile struct {
-	ProfileID     int       `gorm:"column:profile_id;primaryKey;autoIncrement" json:"profile_id"`
-	UserID        int       `gorm:"column:user_id" json:"user_id"`
-	FirstName     string    `gorm:"column:first_name" json:"first_name"`
-	MiddleName    string    `gorm:"column:middle_name" json:"middle_name"`
-	LastName      string    `gorm:"column:last_name" json:"last_name"`
-	Birthdate     *string   `gorm:"column:birthdate" json:"birthdate"`
-	GenderID      *int      `gorm:"column:gender_id" json:"gender_id"`
-	AgeCategoryID *int      `gorm:"column:age_category_id" json:"age_category_id"`
-	PositionID    *int      `gorm:"column:position_id" json:"position_id"`
-	JerseyNumber  *int      `gorm:"column:jersey_number" json:"jersey_number"`
-	PhoneNumber   string    `gorm:"column:phone_number" json:"phone_number"`
-	Address       string    `gorm:"column:address" json:"address"`
-	AvatarURL     string    `gorm:"column:avatar_url" json:"avatar_url"`
-	CreatedAt     time.Time `gorm:"column:created_at" json:"created_at"`
-	UpdatedAt     time.Time `gorm:"column:updated_at" json:"updated_at"`
+	ProfileID   int       `gorm:"column:profile_id;primaryKey;autoIncrement" json:"profile_id"`
+	UserID      int       `gorm:"column:user_id" json:"user_id"`
+	FirstName   string    `gorm:"column:first_name" json:"first_name"`
+	MiddleName  string    `gorm:"column:middle_name" json:"middle_name"`
+	LastName    string    `gorm:"column:last_name" json:"last_name"`
+	Birthdate   *string   `gorm:"column:birthdate" json:"birthdate"`
+	GenderID    *int      `gorm:"column:gender_id" json:"gender_id"`
+	PhoneNumber string    `gorm:"column:phone_number" json:"phone_number"`
+	Address     string    `gorm:"column:address" json:"address"`
+	AvatarURL   string    `gorm:"column:avatar_url" json:"avatar_url"`
+	CreatedAt   time.Time `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt   time.Time `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (UserProfile) TableName() string {
@@ -45,10 +42,10 @@ func (UserProfile) TableName() string {
 type ParentPlayer struct {
 	ID             int       `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
 	ParentUserID   int       `gorm:"column:parent_user_id" json:"parent_user_id"`
-	PlayerUserID   int       `gorm:"column:player_user_id" json:"player_user_id"`
+	PlayerID       int       `gorm:"column:player_id" json:"player_id"`
 	RelationshipID *int      `gorm:"column:relationship_id" json:"relationship_id"`
 	CreatedAt      time.Time `gorm:"column:created_at" json:"created_at"`
-	Player         *User     `gorm:"foreignKey:PlayerUserID;references:UserID" json:"player,omitempty"`
+	Player         *Player   `gorm:"foreignKey:PlayerID;references:PlayerID" json:"player,omitempty"`
 }
 
 func (ParentPlayer) TableName() string {

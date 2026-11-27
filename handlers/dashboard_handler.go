@@ -24,12 +24,10 @@ func GetDashboard(c *fiber.Ctx) error {
 	var children []models.ParentPlayer
 
 	if roleID == models.RefRoleParent {
-		db.Preload("Player.Profile").Where("parent_user_id = ?", userID).Find(&children)
+		db.Preload("Player").Where("parent_user_id = ?", userID).Find(&children)
 		for _, ch := range children {
-			playerIDs = append(playerIDs, ch.PlayerUserID)
+			playerIDs = append(playerIDs, ch.PlayerID)
 		}
-	} else if roleID == models.RefRolePlayer {
-		playerIDs = []int{userID}
 	}
 
 	var upcomingTournaments []models.Tournament
@@ -47,14 +45,14 @@ func GetDashboard(c *fiber.Ctx) error {
 	if roleID == models.RefRoleParent {
 		totalPlayers = int64(len(playerIDs))
 	} else {
-		db.Model(&models.User{}).Where("role_id = ?", models.RefRolePlayer).Count(&totalPlayers)
+		db.Model(&models.Player{}).Count(&totalPlayers)
 	}
 
 	var recentAttendance []models.PlayerAttendance
 	if roleID == models.RefRoleAdmin || roleID == models.RefRoleCoach {
-		db.Preload("Player.Profile").Order("created_at DESC").Limit(10).Find(&recentAttendance)
+		db.Preload("Player").Preload("Status").Order("created_at DESC").Limit(10).Find(&recentAttendance)
 	} else if len(playerIDs) > 0 {
-		db.Preload("Player.Profile").Where("player_user_id IN ?", playerIDs).Order("created_at DESC").Limit(10).Find(&recentAttendance)
+		db.Preload("Player").Preload("Status").Where("player_id IN ?", playerIDs).Order("created_at DESC").Limit(10).Find(&recentAttendance)
 	} else {
 		recentAttendance = []models.PlayerAttendance{}
 	}
@@ -63,7 +61,8 @@ func GetDashboard(c *fiber.Ctx) error {
 	var totalBalance float64
 
 	if roleID == models.RefRoleAdmin {
-		db.Where("status_id IN ?", []int{models.RefSOAUnpaid, models.RefSOAPartial, 45}).
+		db.Preload("Player").Preload("Status").
+			Where("status_id IN ?", []int{models.RefSOAUnpaid, models.RefSOAPartial, 45}).
 			Order("due_date ASC").
 			Limit(10).
 			Find(&pendingSOAs)
@@ -72,9 +71,9 @@ func GetDashboard(c *fiber.Ctx) error {
 			Select("COALESCE(SUM(balance), 0)").
 			Scan(&totalBalance)
 	} else if roleID == models.RefRoleParent {
-		query := db.Where("parent_user_id = ?", userID)
+		query := db.Preload("Player").Preload("Status").Where("parent_user_id = ?", userID)
 		if len(playerIDs) > 0 {
-			query = db.Where("parent_user_id = ? OR player_user_id IN ?", userID, playerIDs)
+			query = db.Preload("Player").Preload("Status").Where("parent_user_id = ? OR player_id IN ?", userID, playerIDs)
 		}
 		query.Order("due_date ASC").Limit(10).Find(&pendingSOAs)
 		for _, soa := range pendingSOAs {

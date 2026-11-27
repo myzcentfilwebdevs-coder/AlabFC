@@ -22,6 +22,15 @@ func getRefMap() map[int]string {
 	return m
 }
 
+func isRegularTrainingDay(dateStr string) (bool, string) {
+	t, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		return false, ""
+	}
+	wd := t.Weekday()
+	return wd == time.Saturday || wd == time.Sunday, wd.String()
+}
+
 func resolveAttendanceStatus(statusID *int, statusName string) (*int, string, error) {
 	if strings.TrimSpace(statusName) != "" {
 		lower := strings.ToLower(strings.TrimSpace(statusName))
@@ -183,7 +192,17 @@ func UpdateTrainingSession(c *fiber.Ctx) error {
 }
 
 func DeleteTrainingSession(c *fiber.Ctx) error {
-	database.Get().Delete(&models.TrainingSession{}, c.Params("id"))
+	sessionID, err := strconv.Atoi(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid session_id"})
+	}
+	res := database.Get().Where("session_id = ?", sessionID).Delete(&models.TrainingSession{})
+	if res.Error != nil {
+		return c.Status(500).JSON(fiber.Map{"error": res.Error.Error()})
+	}
+	if res.RowsAffected == 0 {
+		return c.Status(404).JSON(fiber.Map{"error": "Training session not found"})
+	}
 	return c.JSON(fiber.Map{"message": "Training session deleted"})
 }
 
@@ -199,10 +218,7 @@ func GetSessionAttendance(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "Training session not found"})
 	}
 
-	playerQuery := db.Model(&models.User{}).
-		Preload("Profile").
-		Joins("LEFT JOIN user_profiles ON user_profiles.user_id = users.user_id").
-		Where("users.role_id = ?", models.RefRolePlayer)
+	playerQuery := db.Model(&models.Player{})
 
 	userID, _ := c.Locals("user_id").(int)
 	roleID, _ := c.Locals("role_id").(int)
@@ -215,24 +231,22 @@ func GetSessionAttendance(c *fiber.Ctx) error {
 				"players": []fiber.Map{},
 			})
 		}
-		playerQuery = playerQuery.Where("users.user_id IN ?", childIDs)
-	} else if roleID == models.RefRolePlayer {
-		playerQuery = playerQuery.Where("users.user_id = ?", userID)
+		playerQuery = playerQuery.Where("player_id IN ?", childIDs)
 	}
 
 	if session.AgeCategoryID != nil && strings.ToLower(c.Query("all_players")) != "true" {
-		playerQuery = playerQuery.Where("user_profiles.age_category_id = ?", *session.AgeCategoryID)
+		playerQuery = playerQuery.Where("age_category_id = ?", *session.AgeCategoryID)
 	}
 
-	var players []models.User
-	playerQuery.Order("user_profiles.last_name ASC, user_profiles.first_name ASC").Find(&players)
+	var players []models.Player
+	playerQuery.Order("last_name ASC, first_name ASC").Find(&players)
 
 	var records []models.PlayerAttendance
 	db.Preload("Status").Where("session_id = ?", sessionID).Find(&records)
 
 	attByPlayer := make(map[int]models.PlayerAttendance, len(records))
 	for _, r := range records {
-		attByPlayer[r.PlayerUserID] = r
+		attByPlayer[r.PlayerID] = r
 	}
 
 	refMap := getRefMap()
@@ -240,21 +254,12 @@ func GetSessionAttendance(c *fiber.Ctx) error {
 
 	rows := make([]fiber.Map, 0, len(players))
 	for _, p := range players {
-		firstName, lastName, avatarURL := "", "", ""
-		var jersey *int
 		ageCategory, position := "", ""
-
-		if p.Profile != nil {
-			firstName = p.Profile.FirstName
-			lastName = p.Profile.LastName
-			avatarURL = p.Profile.AvatarURL
-			jersey = p.Profile.JerseyNumber
-			if p.Profile.AgeCategoryID != nil {
-				ageCategory = refMap[*p.Profile.AgeCategoryID]
-			}
-			if p.Profile.PositionID != nil {
-				position = refMap[*p.Profile.PositionID]
-			}
+		if p.AgeCategoryID != nil {
+			ageCategory = refMap[*p.AgeCategoryID]
+		}
+		if p.PositionID != nil {
+			position = refMap[*p.PositionID]
 		}
 
 		var attendanceID *int
@@ -263,7 +268,7 @@ func GetSessionAttendance(c *fiber.Ctx) error {
 		var checkInTime *time.Time
 		remarks := ""
 
-		if rec, ok := attByPlayer[p.UserID]; ok {
+		if rec, ok := attByPlayer[p.PlayerID]; ok {
 			idCopy := rec.AttendanceID
 			attendanceID = &idCopy
 			statusID = rec.StatusID
@@ -285,24 +290,25 @@ func GetSessionAttendance(c *fiber.Ctx) error {
 		case "absent":
 			absentCount++
 		default:
+			statusName = ""
 			unmarkedCount++
 		}
 
 		rows = append(rows, fiber.Map{
-			"player_user_id": p.UserID,
-			"username":       p.Username,
-			"first_name":     firstName,
-			"last_name":      lastName,
-			"jersey_number":  jersey,
-			"age_category":   ageCategory,
-			"position":       position,
-			"avatar_url":     avatarURL,
-			"attendance_id":  attendanceID,
-			"status_id":      statusID,
-			"status":         statusName,
-			"attended":       attended,
-			"check_in_time":  checkInTime,
-			"remarks":        remarks,
+			"player_id":     p.PlayerID,
+			"first_name":    p.FirstName,
+			"last_name":     p.LastName,
+			"full_name":     strings.TrimSpace(p.FirstName + " " + p.LastName),
+			"jersey_number": p.JerseyNumber,
+			"age_category":  ageCategory,
+			"position":      position,
+			"avatar_url":    p.AvatarURL,
+			"attendance_id": attendanceID,
+			"status_id":     statusID,
+			"status":        statusName,
+			"attended":      attended,
+			"check_in_time": checkInTime,
+			"remarks":       remarks,
 		})
 	}
 
@@ -318,7 +324,7 @@ func GetSessionAttendance(c *fiber.Ctx) error {
 	})
 }
 
-func upsertPlayerAttendance(sessionID, playerUserID int, statusID *int, statusName, remarks string, recordedBy *int) (models.PlayerAttendance, error) {
+func upsertPlayerAttendance(sessionID, playerID int, statusID *int, statusName, remarks string, recordedBy *int) (models.PlayerAttendance, error) {
 	resolvedID, lowerStatus, err := resolveAttendanceStatus(statusID, statusName)
 	if err != nil {
 		return models.PlayerAttendance{}, err
@@ -333,15 +339,15 @@ func upsertPlayerAttendance(sessionID, playerUserID int, statusID *int, statusNa
 	db := database.Get()
 	var record models.PlayerAttendance
 
-	err = db.Where("session_id = ? AND player_user_id = ?", sessionID, playerUserID).First(&record).Error
+	err = db.Where("session_id = ? AND player_id = ?", sessionID, playerID).First(&record).Error
 	if err != nil {
 		record = models.PlayerAttendance{
-			SessionID:    sessionID,
-			PlayerUserID: playerUserID,
-			StatusID:     resolvedID,
-			CheckInTime:  checkIn,
-			Remarks:      remarks,
-			RecordedBy:   recordedBy,
+			SessionID:   sessionID,
+			PlayerID:    playerID,
+			StatusID:    resolvedID,
+			CheckInTime: checkIn,
+			Remarks:     remarks,
+			RecordedBy:  recordedBy,
 		}
 		err = db.Create(&record).Error
 	} else {
@@ -358,6 +364,7 @@ func upsertPlayerAttendance(sessionID, playerUserID int, statusID *int, statusNa
 func RecordAttendance(c *fiber.Ctx) error {
 	var req struct {
 		SessionID    int    `json:"session_id"`
+		PlayerID     int    `json:"player_id"`
 		PlayerUserID int    `json:"player_user_id"`
 		StatusID     *int   `json:"status_id"`
 		Status       string `json:"status"`
@@ -368,8 +375,13 @@ func RecordAttendance(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
-	if req.SessionID == 0 || req.PlayerUserID == 0 {
-		return c.Status(400).JSON(fiber.Map{"error": "session_id and player_user_id are required"})
+	pid := req.PlayerID
+	if pid == 0 {
+		pid = req.PlayerUserID
+	}
+
+	if req.SessionID == 0 || pid == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "session_id and player_id are required"})
 	}
 
 	var recordedBy *int
@@ -377,12 +389,12 @@ func RecordAttendance(c *fiber.Ctx) error {
 		recordedBy = &uid
 	}
 
-	record, err := upsertPlayerAttendance(req.SessionID, req.PlayerUserID, req.StatusID, req.Status, req.Remarks, recordedBy)
+	record, err := upsertPlayerAttendance(req.SessionID, pid, req.StatusID, req.Status, req.Remarks, recordedBy)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.Get().Preload("Status").Preload("Player.Profile").First(&record, record.AttendanceID)
+	database.Get().Preload("Status").Preload("Player").First(&record, record.AttendanceID)
 	return c.JSON(fiber.Map{
 		"message": "Attendance saved",
 		"data":    record,
@@ -393,6 +405,7 @@ func RecordBulkAttendance(c *fiber.Ctx) error {
 	var req struct {
 		SessionID int `json:"session_id"`
 		Records   []struct {
+			PlayerID     int    `json:"player_id"`
 			PlayerUserID int    `json:"player_user_id"`
 			StatusID     *int   `json:"status_id"`
 			Status       string `json:"status"`
@@ -415,10 +428,14 @@ func RecordBulkAttendance(c *fiber.Ctx) error {
 
 	saved := 0
 	for _, item := range req.Records {
-		if item.PlayerUserID == 0 {
+		pid := item.PlayerID
+		if pid == 0 {
+			pid = item.PlayerUserID
+		}
+		if pid == 0 {
 			continue
 		}
-		if _, err := upsertPlayerAttendance(req.SessionID, item.PlayerUserID, item.StatusID, item.Status, item.Remarks, recordedBy); err == nil {
+		if _, err := upsertPlayerAttendance(req.SessionID, pid, item.StatusID, item.Status, item.Remarks, recordedBy); err == nil {
 			saved++
 		}
 	}
@@ -440,8 +457,8 @@ func GetPlayerAttendanceHistory(c *fiber.Ctx) error {
 	}
 
 	db := database.Get()
-	var player models.User
-	if err := db.Preload("Profile").First(&player, playerID).Error; err != nil {
+	var player models.Player
+	if err := db.First(&player, playerID).Error; err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "Player not found"})
 	}
 
@@ -454,7 +471,7 @@ func GetPlayerAttendanceHistory(c *fiber.Ctx) error {
 	query := db.Preload("Session.AgeCategory").
 		Preload("Status").
 		Joins("JOIN training_sessions ON training_sessions.session_id = player_attendance.session_id").
-		Where("player_attendance.player_user_id = ?", playerID)
+		Where("player_attendance.player_id = ?", playerID)
 
 	if targetDate != "" {
 		query = query.Where("training_sessions.session_date = ?", targetDate)
@@ -473,21 +490,6 @@ func GetPlayerAttendanceHistory(c *fiber.Ctx) error {
 	query.Order("training_sessions.session_date DESC, player_attendance.created_at DESC").Find(&records)
 
 	refMap := getRefMap()
-	firstName, lastName, avatarURL, ageCategory, position := "", "", "", "", ""
-	var jersey *int
-	if player.Profile != nil {
-		firstName = player.Profile.FirstName
-		lastName = player.Profile.LastName
-		avatarURL = player.Profile.AvatarURL
-		jersey = player.Profile.JerseyNumber
-		if player.Profile.AgeCategoryID != nil {
-			ageCategory = refMap[*player.Profile.AgeCategoryID]
-		}
-		if player.Profile.PositionID != nil {
-			position = refMap[*player.Profile.PositionID]
-		}
-	}
-
 	present, absent := 0, 0
 	attendedToday := false
 	todayStatus := ""
@@ -547,16 +549,7 @@ func GetPlayerAttendanceHistory(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"player": fiber.Map{
-			"player_user_id": player.UserID,
-			"username":       player.Username,
-			"first_name":     firstName,
-			"last_name":      lastName,
-			"jersey_number":  jersey,
-			"age_category":   ageCategory,
-			"position":       position,
-			"avatar_url":     avatarURL,
-		},
+		"player":         formatPlayer(player, refMap),
 		"today":          today,
 		"attended_today": attendedToday,
 		"today_status":   todayStatus,
@@ -574,10 +567,7 @@ func GetAllPlayersAttendanceHistory(c *fiber.Ctx) error {
 	db := database.Get()
 	today := time.Now().Format("2006-01-02")
 
-	playerQuery := db.Model(&models.User{}).
-		Preload("Profile").
-		Joins("LEFT JOIN user_profiles ON user_profiles.user_id = users.user_id").
-		Where("users.role_id = ?", models.RefRolePlayer)
+	playerQuery := db.Model(&models.Player{})
 
 	userID, _ := c.Locals("user_id").(int)
 	roleID, _ := c.Locals("role_id").(int)
@@ -586,21 +576,19 @@ func GetAllPlayersAttendanceHistory(c *fiber.Ctx) error {
 		if len(childIDs) == 0 {
 			return c.JSON(fiber.Map{"today": today, "count": 0, "players": []fiber.Map{}})
 		}
-		playerQuery = playerQuery.Where("users.user_id IN ?", childIDs)
-	} else if roleID == models.RefRolePlayer {
-		playerQuery = playerQuery.Where("users.user_id = ?", userID)
+		playerQuery = playerQuery.Where("player_id IN ?", childIDs)
 	}
 
 	if ageCat := strings.TrimSpace(c.Query("age_category")); ageCat != "" {
 		if seq := getRefSeqnumByName(ageCat); seq != nil {
-			playerQuery = playerQuery.Where("user_profiles.age_category_id = ?", *seq)
+			playerQuery = playerQuery.Where("age_category_id = ?", *seq)
 		}
 	} else if ageCatID := strings.TrimSpace(c.Query("age_category_id")); ageCatID != "" {
-		playerQuery = playerQuery.Where("user_profiles.age_category_id = ?", ageCatID)
+		playerQuery = playerQuery.Where("age_category_id = ?", ageCatID)
 	}
 
-	var players []models.User
-	playerQuery.Order("user_profiles.last_name ASC, user_profiles.first_name ASC").Find(&players)
+	var players []models.Player
+	playerQuery.Order("last_name ASC, first_name ASC").Find(&players)
 
 	attQuery := db.Preload("Session").
 		Preload("Status").
@@ -621,29 +609,22 @@ func GetAllPlayersAttendanceHistory(c *fiber.Ctx) error {
 
 	recordsByPlayer := make(map[int][]models.PlayerAttendance)
 	for _, r := range allRecords {
-		recordsByPlayer[r.PlayerUserID] = append(recordsByPlayer[r.PlayerUserID], r)
+		recordsByPlayer[r.PlayerID] = append(recordsByPlayer[r.PlayerID], r)
 	}
 
 	refMap := getRefMap()
 	result := make([]fiber.Map, 0, len(players))
 
 	for _, p := range players {
-		firstName, lastName, avatarURL, ageCategory, position := "", "", "", "", ""
-		var jersey *int
-		if p.Profile != nil {
-			firstName = p.Profile.FirstName
-			lastName = p.Profile.LastName
-			avatarURL = p.Profile.AvatarURL
-			jersey = p.Profile.JerseyNumber
-			if p.Profile.AgeCategoryID != nil {
-				ageCategory = refMap[*p.Profile.AgeCategoryID]
-			}
-			if p.Profile.PositionID != nil {
-				position = refMap[*p.Profile.PositionID]
-			}
+		ageCategory, position := "", ""
+		if p.AgeCategoryID != nil {
+			ageCategory = refMap[*p.AgeCategoryID]
+		}
+		if p.PositionID != nil {
+			position = refMap[*p.PositionID]
 		}
 
-		pRecords := recordsByPlayer[p.UserID]
+		pRecords := recordsByPlayer[p.PlayerID]
 		present, absent := 0, 0
 		attendedToday := false
 		todayStatus := ""
@@ -699,14 +680,14 @@ func GetAllPlayersAttendanceHistory(c *fiber.Ctx) error {
 		}
 
 		result = append(result, fiber.Map{
-			"player_user_id": p.UserID,
-			"username":       p.Username,
-			"first_name":     firstName,
-			"last_name":      lastName,
-			"jersey_number":  jersey,
+			"player_id":      p.PlayerID,
+			"first_name":     p.FirstName,
+			"last_name":      p.LastName,
+			"full_name":      strings.TrimSpace(p.FirstName + " " + p.LastName),
+			"jersey_number":  p.JerseyNumber,
 			"age_category":   ageCategory,
 			"position":       position,
-			"avatar_url":     avatarURL,
+			"avatar_url":     p.AvatarURL,
 			"attended_today": attendedToday,
 			"today_status":   todayStatus,
 			"summary": fiber.Map{
@@ -732,12 +713,25 @@ func GetDailyAttendance(c *fiber.Ctx) error {
 		date = time.Now().Format("2006-01-02")
 	}
 
+	isRegular, dayName := isRegularTrainingDay(date)
+
 	db := database.Get()
 
-	playerQuery := db.Model(&models.User{}).
-		Preload("Profile").
-		Joins("LEFT JOIN user_profiles ON user_profiles.user_id = users.user_id").
-		Where("users.role_id = ?", models.RefRolePlayer)
+	var sessions []models.TrainingSession
+	db.Where("session_date = ?", date).Order("session_id ASC").Find(&sessions)
+
+	hasSession := len(sessions) > 0
+	isTrainingDay := isRegular || hasSession
+	scheduleType := "No Training Scheduled"
+	if isRegular && hasSession {
+		scheduleType = "Regular Training"
+	} else if isRegular {
+		scheduleType = "Regular Training"
+	} else if hasSession {
+		scheduleType = "Added Training Session"
+	}
+
+	playerQuery := db.Model(&models.Player{})
 
 	userID, _ := c.Locals("user_id").(int)
 	roleID, _ := c.Locals("role_id").(int)
@@ -745,33 +739,31 @@ func GetDailyAttendance(c *fiber.Ctx) error {
 		childIDs := getParentChildIDs(userID)
 		if len(childIDs) == 0 {
 			return c.JSON(fiber.Map{
-				"date":       date,
-				"session_id": nil,
-				"summary":    fiber.Map{"total_players": 0, "present": 0, "absent": 0, "unmarked": 0},
-				"players":    []fiber.Map{},
+				"date":            date,
+				"day_name":        dayName,
+				"is_training_day": isTrainingDay,
+				"schedule_type":   scheduleType,
+				"session_id":      nil,
+				"summary":         fiber.Map{"total_players": 0, "present": 0, "absent": 0, "unmarked": 0},
+				"players":         []fiber.Map{},
 			})
 		}
-		playerQuery = playerQuery.Where("users.user_id IN ?", childIDs)
-	} else if roleID == models.RefRolePlayer {
-		playerQuery = playerQuery.Where("users.user_id = ?", userID)
+		playerQuery = playerQuery.Where("player_id IN ?", childIDs)
 	}
 
 	if ageCat := strings.TrimSpace(c.Query("age_category")); ageCat != "" {
 		if seq := getRefSeqnumByName(ageCat); seq != nil {
-			playerQuery = playerQuery.Where("user_profiles.age_category_id = ?", *seq)
+			playerQuery = playerQuery.Where("age_category_id = ?", *seq)
 		}
 	} else if ageCatID := strings.TrimSpace(c.Query("age_category_id")); ageCatID != "" {
-		playerQuery = playerQuery.Where("user_profiles.age_category_id = ?", ageCatID)
+		playerQuery = playerQuery.Where("age_category_id = ?", ageCatID)
 	}
 
-	var players []models.User
-	playerQuery.Order("user_profiles.last_name ASC, user_profiles.first_name ASC").Find(&players)
-
-	var sessions []models.TrainingSession
-	db.Where("session_date = ?", date).Order("session_id ASC").Find(&sessions)
+	var players []models.Player
+	playerQuery.Order("last_name ASC, first_name ASC").Find(&players)
 
 	attByPlayer := make(map[int]models.PlayerAttendance)
-	if len(sessions) > 0 {
+	if hasSession {
 		sessionIDs := make([]int, 0, len(sessions))
 		for _, s := range sessions {
 			sessionIDs = append(sessionIDs, s.SessionID)
@@ -779,7 +771,7 @@ func GetDailyAttendance(c *fiber.Ctx) error {
 		var records []models.PlayerAttendance
 		db.Preload("Status").Where("session_id IN ?", sessionIDs).Find(&records)
 		for _, r := range records {
-			attByPlayer[r.PlayerUserID] = r
+			attByPlayer[r.PlayerID] = r
 		}
 	}
 
@@ -788,21 +780,12 @@ func GetDailyAttendance(c *fiber.Ctx) error {
 
 	rows := make([]fiber.Map, 0, len(players))
 	for _, p := range players {
-		firstName, lastName, avatarURL := "", "", ""
-		var jersey *int
 		ageCategory, position := "", ""
-
-		if p.Profile != nil {
-			firstName = p.Profile.FirstName
-			lastName = p.Profile.LastName
-			avatarURL = p.Profile.AvatarURL
-			jersey = p.Profile.JerseyNumber
-			if p.Profile.AgeCategoryID != nil {
-				ageCategory = refMap[*p.Profile.AgeCategoryID]
-			}
-			if p.Profile.PositionID != nil {
-				position = refMap[*p.Profile.PositionID]
-			}
+		if p.AgeCategoryID != nil {
+			ageCategory = refMap[*p.AgeCategoryID]
+		}
+		if p.PositionID != nil {
+			position = refMap[*p.PositionID]
 		}
 
 		var attendanceID *int
@@ -812,7 +795,7 @@ func GetDailyAttendance(c *fiber.Ctx) error {
 		var checkInTime *time.Time
 		remarks := ""
 
-		if rec, ok := attByPlayer[p.UserID]; ok {
+		if rec, ok := attByPlayer[p.PlayerID]; ok {
 			aID := rec.AttendanceID
 			sID := rec.SessionID
 			attendanceID = &aID
@@ -841,33 +824,37 @@ func GetDailyAttendance(c *fiber.Ctx) error {
 		}
 
 		rows = append(rows, fiber.Map{
-			"player_user_id": p.UserID,
-			"username":       p.Username,
-			"first_name":     firstName,
-			"last_name":      lastName,
-			"jersey_number":  jersey,
-			"age_category":   ageCategory,
-			"position":       position,
-			"avatar_url":     avatarURL,
-			"session_id":     sessionID,
-			"attendance_id":  attendanceID,
-			"status_id":      statusID,
-			"status":         statusName,
-			"attended":       attended,
-			"check_in_time":  checkInTime,
-			"remarks":        remarks,
+			"player_id":     p.PlayerID,
+			"first_name":    p.FirstName,
+			"last_name":     p.LastName,
+			"full_name":     strings.TrimSpace(p.FirstName + " " + p.LastName),
+			"jersey_number": p.JerseyNumber,
+			"age_category":  ageCategory,
+			"position":      position,
+			"avatar_url":    p.AvatarURL,
+			"session_id":    sessionID,
+			"attendance_id": attendanceID,
+			"status_id":     statusID,
+			"status":        statusName,
+			"attended":      attended,
+			"check_in_time": checkInTime,
+			"remarks":       remarks,
 		})
 	}
 
 	var defaultSessionID *int
-	if len(sessions) > 0 {
+	if hasSession {
 		id := sessions[0].SessionID
 		defaultSessionID = &id
 	}
 
 	return c.JSON(fiber.Map{
-		"date":       date,
-		"session_id": defaultSessionID,
+		"date":            date,
+		"day_name":        dayName,
+		"is_training_day": isTrainingDay,
+		"schedule_type":   scheduleType,
+		"session_id":      defaultSessionID,
+		"sessions":        sessions,
 		"summary": fiber.Map{
 			"total_players": len(rows),
 			"present":       presentCount,
@@ -881,11 +868,13 @@ func GetDailyAttendance(c *fiber.Ctx) error {
 func RecordDailyAttendance(c *fiber.Ctx) error {
 	var req struct {
 		Date         string `json:"date"`
+		PlayerID     int    `json:"player_id"`
 		PlayerUserID int    `json:"player_user_id"`
 		StatusID     *int   `json:"status_id"`
 		Status       string `json:"status"`
 		Remarks      string `json:"remarks"`
 		Records      []struct {
+			PlayerID     int    `json:"player_id"`
 			PlayerUserID int    `json:"player_user_id"`
 			StatusID     *int   `json:"status_id"`
 			Status       string `json:"status"`
@@ -907,11 +896,18 @@ func RecordDailyAttendance(c *fiber.Ctx) error {
 		recordedBy = &uid
 	}
 
+	isRegular, dayName := isRegularTrainingDay(date)
+
 	db := database.Get()
 	var session models.TrainingSession
 	if err := db.Where("session_date = ?", date).Order("session_id ASC").First(&session).Error; err != nil {
+		if !isRegular {
+			return c.Status(400).JSON(fiber.Map{
+				"error": fmt.Sprintf("No training session scheduled on %s (%s). Regular training is Saturday & Sunday, or add a training session first.", dayName, date),
+			})
+		}
 		session = models.TrainingSession{
-			Title:       "Daily Training - " + date,
+			Title:       fmt.Sprintf("Regular Training - %s (%s)", dayName, date),
 			SessionDate: date,
 			CoachUserID: recordedBy,
 		}
@@ -923,34 +919,44 @@ func RecordDailyAttendance(c *fiber.Ctx) error {
 	if len(req.Records) > 0 {
 		saved := 0
 		for _, item := range req.Records {
-			if item.PlayerUserID == 0 {
+			pid := item.PlayerID
+			if pid == 0 {
+				pid = item.PlayerUserID
+			}
+			if pid == 0 {
 				continue
 			}
-			if _, err := upsertPlayerAttendance(session.SessionID, item.PlayerUserID, item.StatusID, item.Status, item.Remarks, recordedBy); err == nil {
+			if _, err := upsertPlayerAttendance(session.SessionID, pid, item.StatusID, item.Status, item.Remarks, recordedBy); err == nil {
 				saved++
 			}
 		}
 		return c.JSON(fiber.Map{
 			"message":    "Daily attendance saved",
 			"date":       date,
+			"day_name":   dayName,
 			"session_id": session.SessionID,
 			"saved":      saved,
 		})
 	}
 
-	if req.PlayerUserID == 0 {
-		return c.Status(400).JSON(fiber.Map{"error": "player_user_id or records is required"})
+	pid := req.PlayerID
+	if pid == 0 {
+		pid = req.PlayerUserID
+	}
+	if pid == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "player_id or records is required"})
 	}
 
-	record, err := upsertPlayerAttendance(session.SessionID, req.PlayerUserID, req.StatusID, req.Status, req.Remarks, recordedBy)
+	record, err := upsertPlayerAttendance(session.SessionID, pid, req.StatusID, req.Status, req.Remarks, recordedBy)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	db.Preload("Status").Preload("Player.Profile").First(&record, record.AttendanceID)
+	db.Preload("Status").Preload("Player").First(&record, record.AttendanceID)
 	return c.JSON(fiber.Map{
 		"message":    "Daily attendance saved",
 		"date":       date,
+		"day_name":   dayName,
 		"session_id": session.SessionID,
 		"data":       record,
 	})

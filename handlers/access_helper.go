@@ -13,7 +13,7 @@ func getParentChildIDs(parentUserID int) []int {
 
 	ids := make([]int, 0, len(links))
 	for _, l := range links {
-		ids = append(ids, l.PlayerUserID)
+		ids = append(ids, l.PlayerID)
 	}
 	return ids
 }
@@ -25,13 +25,10 @@ func canAccessPlayer(c *fiber.Ctx, targetPlayerID int) bool {
 	if roleID == models.RefRoleAdmin || roleID == models.RefRoleCoach {
 		return true
 	}
-	if roleID == models.RefRolePlayer {
-		return userID == targetPlayerID
-	}
 	if roleID == models.RefRoleParent {
 		var count int64
 		database.Get().Model(&models.ParentPlayer{}).
-			Where("parent_user_id = ? AND player_user_id = ?", userID, targetPlayerID).
+			Where("parent_user_id = ? AND player_id = ?", userID, targetPlayerID).
 			Count(&count)
 		return count > 0
 	}
@@ -49,10 +46,7 @@ func canAccessSOA(c *fiber.Ctx, soa models.StatementOfAccount) bool {
 		if soa.ParentUserID != nil && *soa.ParentUserID == userID {
 			return true
 		}
-		return canAccessPlayer(c, soa.PlayerUserID)
-	}
-	if roleID == models.RefRolePlayer {
-		return soa.PlayerUserID == userID
+		return canAccessPlayer(c, soa.PlayerID)
 	}
 	return false
 }

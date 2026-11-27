@@ -5,7 +5,7 @@ import "time"
 type StatementOfAccount struct {
 	SOAID         int               `gorm:"column:soa_id;primaryKey;autoIncrement" json:"soa_id"`
 	SOANumber     string            `gorm:"column:soa_number" json:"soa_number"`
-	PlayerUserID  int               `gorm:"column:player_user_id" json:"player_user_id"`
+	PlayerID      int               `gorm:"column:player_id" json:"player_id"`
 	ParentUserID  *int              `gorm:"column:parent_user_id" json:"parent_user_id"`
 	BillingPeriod string            `gorm:"column:billing_period" json:"billing_period"`
 	DueDate       string            `gorm:"column:due_date" json:"due_date"`
@@ -16,7 +16,7 @@ type StatementOfAccount struct {
 	Notes         string            `gorm:"column:notes" json:"notes"`
 	CreatedAt     time.Time         `gorm:"column:created_at" json:"created_at"`
 	UpdatedAt     time.Time         `gorm:"column:updated_at" json:"updated_at"`
-	Player        *User             `gorm:"foreignKey:PlayerUserID;references:UserID" json:"player,omitempty"`
+	Player        *Player           `gorm:"foreignKey:PlayerID;references:PlayerID" json:"player,omitempty"`
 	Parent        *User             `gorm:"foreignKey:ParentUserID;references:UserID" json:"parent,omitempty"`
 	Status        *GenericReference `gorm:"foreignKey:StatusID;references:Seqnum" json:"status,omitempty"`
 	Items         []SOAItem         `gorm:"foreignKey:SOAID;references:SOAID" json:"items,omitempty"`
