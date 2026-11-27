@@ -109,6 +109,16 @@ func formatPlayer(p models.Player, refMap map[int]string) fiber.Map {
 		birthdate = &bd
 	}
 
+	createdByName := ""
+	if p.CreatedByUser != nil {
+		if p.CreatedByUser.Profile != nil {
+			createdByName = strings.TrimSpace(p.CreatedByUser.Profile.FirstName + " " + p.CreatedByUser.Profile.LastName)
+		}
+		if createdByName == "" {
+			createdByName = p.CreatedByUser.Username
+		}
+	}
+
 	return fiber.Map{
 		"player_id":       p.PlayerID,
 		"first_name":      p.FirstName,
@@ -126,6 +136,8 @@ func formatPlayer(p models.Player, refMap map[int]string) fiber.Map {
 		"avatar_url":      p.AvatarURL,
 		"status_id":       p.StatusID,
 		"status":          statusName,
+		"created_by":      p.CreatedBy,
+		"created_by_name": createdByName,
 		"created_at":      p.CreatedAt,
 	}
 }
@@ -307,7 +319,7 @@ func GetParents(c *fiber.Ctx) error {
 
 func GetPlayers(c *fiber.Ctx) error {
 	db := database.Get()
-	query := db.Model(&models.Player{})
+	query := db.Model(&models.Player{}).Preload("CreatedByUser.Profile")
 
 	if ageCat := strings.TrimSpace(c.Query("age_category")); ageCat != "" {
 		if seq := getRefSeqnumByName(ageCat); seq != nil {
@@ -384,6 +396,11 @@ func CreatePlayer(c *fiber.Ctx) error {
 		statusID = *seq
 	}
 
+	var createdBy *int
+	if uID, ok := c.Locals("user_id").(int); ok && uID > 0 {
+		createdBy = &uID
+	}
+
 	player := models.Player{
 		FirstName:     req.FirstName,
 		MiddleName:    strings.TrimSpace(req.MiddleName),
@@ -395,6 +412,7 @@ func CreatePlayer(c *fiber.Ctx) error {
 		JerseyNumber:  req.JerseyNumber,
 		AvatarURL:     strings.TrimSpace(req.AvatarURL),
 		StatusID:      statusID,
+		CreatedBy:     createdBy,
 	}
 
 	db := database.Get()
@@ -408,13 +426,6 @@ func CreatePlayer(c *fiber.Ctx) error {
 			parentID = &pid
 		}
 	}
-	if parentID == nil {
-		if rID, ok := c.Locals("role_id").(int); ok && rID == models.RefRoleParent {
-			if uID, ok := c.Locals("user_id").(int); ok && uID > 0 {
-				parentID = &uID
-			}
-		}
-	}
 	if parentID != nil && *parentID > 0 {
 		link := models.ParentPlayer{
 			ParentUserID:   *parentID,
@@ -423,6 +434,8 @@ func CreatePlayer(c *fiber.Ctx) error {
 		}
 		db.Create(&link)
 	}
+
+	db.Preload("CreatedByUser.Profile").First(&player, player.PlayerID)
 
 	return c.Status(201).JSON(fiber.Map{
 		"message": "Player created",
@@ -501,6 +514,7 @@ func UpdatePlayer(c *fiber.Ctx) error {
 	player.UpdatedAt = time.Now()
 
 	db.Save(&player)
+	db.Preload("CreatedByUser.Profile").First(&player, player.PlayerID)
 	return c.JSON(fiber.Map{
 		"message": "Player updated",
 		"data":    formatPlayer(player, getRefMap()),

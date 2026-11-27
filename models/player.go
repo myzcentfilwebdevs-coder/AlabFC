@@ -14,8 +14,10 @@ type Player struct {
 	JerseyNumber  *int      `gorm:"column:jersey_number" json:"jersey_number"`
 	AvatarURL     string    `gorm:"column:avatar_url" json:"avatar_url"`
 	StatusID      int       `gorm:"column:status_id" json:"status_id"`
+	CreatedBy     *int      `gorm:"column:created_by" json:"created_by"`
 	CreatedAt     time.Time `gorm:"column:created_at" json:"created_at"`
 	UpdatedAt     time.Time `gorm:"column:updated_at" json:"updated_at"`
+	CreatedByUser *User     `gorm:"foreignKey:CreatedBy;references:UserID" json:"created_by_user,omitempty"`
 }
 
 func (Player) TableName() string {

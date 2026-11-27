@@ -50,9 +50,9 @@ func SetupRoutes(app *fiber.App) {
 	api.Delete("/rbac/role-access/:role_id/module/:module_id", middleware.RequireAuth(), middleware.RequireModule(29), handlers.RemoveRoleModule)
 
 	api.Get("/players", handlers.GetPlayers)
-	api.Post("/players", middleware.RequireAuth(), middleware.RequireModule(23), handlers.CreatePlayer)
-	api.Put("/players/:id", middleware.RequireAuth(), middleware.RequireModule(23), handlers.UpdatePlayer)
-	api.Delete("/players/:id", middleware.RequireAuth(), middleware.RequireModule(23), handlers.DeletePlayer)
+	api.Post("/players", middleware.RequireAuth(), middleware.RequireRoles(models.RefRoleAdmin), middleware.RequireModule(23), handlers.CreatePlayer)
+	api.Put("/players/:id", middleware.RequireAuth(), middleware.RequireRoles(models.RefRoleAdmin), middleware.RequireModule(23), handlers.UpdatePlayer)
+	api.Delete("/players/:id", middleware.RequireAuth(), middleware.RequireRoles(models.RefRoleAdmin), middleware.RequireModule(23), handlers.DeletePlayer)
 
 	api.Get("/sessions", middleware.RequireAuth(), middleware.RequireModule(10), handlers.GetTrainingSessions)
 	api.Post("/sessions", middleware.RequireAuth(), middleware.RequireModule(11), handlers.CreateTrainingSession)
