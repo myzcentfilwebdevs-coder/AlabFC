@@ -32,6 +32,7 @@ func buildVerificationHTML(firstName, verifyLink string) string {
 	}
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html>
+<head><meta charset="UTF-8"></head>
 <body style="font-family: Arial, sans-serif; background-color: #070d1d; color: #ffffff; padding: 30px;">
   <div style="max-width: 520px; margin: 0 auto; background-color: #0d152a; border: 1px solid #1e293b; border-radius: 14px; padding: 32px; text-align: center;">
     <h2 style="margin: 0 0 10px; color: #ffffff;">ALAB FOOTBALL CLUB</h2>

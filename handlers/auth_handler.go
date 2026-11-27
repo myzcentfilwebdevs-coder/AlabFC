@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log"
 	"net/mail"
 	"os"
 	"strings"
@@ -143,8 +144,10 @@ func Register(c *fiber.Ctx) error {
 
 	verifyLink := resolveAppBaseURL(c) + "/api/auth/verify-email?token=" + emailToken
 	if err := utils.SendVerificationEmail(req.Email, req.FirstName, verifyLink); err != nil {
+		log.Printf("[AUTH] Email send FAILED to %s: %v", req.Email, err)
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to send verification email: " + err.Error()})
 	}
+	log.Printf("[AUTH] Verification email SENT to %s", req.Email)
 
 	pending := &PendingRegistration{
 		Username:      req.Username,
@@ -194,8 +197,10 @@ func VerifyEmailLink(c *fiber.Ctx) error {
 	pendingMu.Unlock()
 
 	if !exists {
-		return c.Status(404).Type("html").SendString(`<!DOCTYPE html>
+		c.Set("Content-Type", "text/html; charset=utf-8")
+		return c.Status(404).SendString(`<!DOCTYPE html>
 <html>
+<head><meta charset="UTF-8"><title>ALAB FC</title></head>
 <body style="font-family: Arial, sans-serif; background:#070d1d; color:#fff; display:flex; align-items:center; justify-content:center; height:100vh; margin:0;">
   <div style="background:#0d152a; border:1px solid #ef4444; border-radius:16px; padding:32px; text-align:center; max-width:420px;">
     <h2 style="color:#f87171; margin-top:0;">Link Expired or Invalid</h2>
@@ -214,12 +219,14 @@ func VerifyEmailLink(c *fiber.Ctx) error {
 		return c.Redirect(frontendRedirect+sep+"email_verified=true&email="+pending.Email, fiber.StatusTemporaryRedirect)
 	}
 
-	return c.Status(200).Type("html").SendString(`<!DOCTYPE html>
+	c.Set("Content-Type", "text/html; charset=utf-8")
+	return c.Status(200).SendString(`<!DOCTYPE html>
 <html>
+<head><meta charset="UTF-8"><title>ALAB FC - Email Verified</title></head>
 <body style="font-family: Arial, sans-serif; background:#070d1d; color:#fff; display:flex; align-items:center; justify-content:center; height:100vh; margin:0;">
   <div style="background:#0d152a; border:1px solid #22c55e; border-radius:16px; padding:36px; text-align:center; max-width:440px;">
     <h2 style="color:#4ade80; margin-top:0;">Email Verified!</h2>
-    <p style="color:#cbd5e1; line-height:1.6;">Your email has been verified. You can now return to the ALAB FC registration page — your Google Authenticator QR Code is now ready to scan.</p>
+    <p style="color:#cbd5e1; line-height:1.6;">Your email has been verified. You can now return to the ALAB FC registration page - your Google Authenticator QR Code is now ready to scan.</p>
   </div>
 </body>
 </html>`)
